@@ -18,6 +18,9 @@ init_df <- data.table(date = dayvec)[,":="(
 init_df[,  ":="(year5 = floor(year / 5) * 5)]
 setkey(init_df, date)
 
+# Filter for Romania
+cities <- subset(cities, CNTR_CODE == "RO")
+
 # Create groups to iterate though cities
 ncities <- nrow(cities)
 cities$grp <- rep(1:ceiling(ncities / grpsize), each = grpsize)[1:ncities]
@@ -56,12 +59,20 @@ for (igrp in chunklist) {
   # Extract cities
   grpcities <- subset(cities, grp == igrp, URAU_CODE, drop = T)
   
-  # Prepare parallel
+  # Print chunk info to console
+  message(sprintf("Processing SSP %s - Chunk %d/%d (%d cities)", 
+                  issp, igrp, max(chunklist), length(grpcities)))
+
+  # Prepare parallel with progress bar
   cl <- makeCluster(ncores)
-  registerDoParallel(cl)
+  registerDoSNOW(cl)
+  
+  pb <- txtProgressBar(max = length(grpcities), style = 3)
+  progress <- function(n) setTxtProgressBar(pb, n)
+  opts <- list(progress = progress)
   
   # Start looping through cities and SSPs
-  dummy <- foreach(city = grpcities, .packages = packs) %dopar% 
+  dummy <- foreach(city = grpcities, .packages = packs, .options.snow = opts) %dopar% 
   {
     
     # For when the libraries are stored in a non-standard location

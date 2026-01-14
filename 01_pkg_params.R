@@ -75,10 +75,10 @@ if (!dir.exists("data")){
 # Number of simulations for the Monte-Carlo eCI and number of cores
 # Too many cores can result in insufficient memory allocated to each
 nsim <- 500
-ncores <- pmax(detectCores() - 1, 1) |> pmin(15)
+ncores <- pmax(detectCores() - 1, 1) |> pmin(4)
 
 # Size of groups of cities to parallelise
-grpsize <- 10
+grpsize <- 2
 
 # Directory for temporary saving (keep memory clear)
 # tdir <- tempdir() # WARNING: files can be deleted automatically after some time
