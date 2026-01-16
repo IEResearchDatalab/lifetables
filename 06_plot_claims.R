@@ -52,21 +52,30 @@ calc_annual_rate <- function(dt_subset){
 }
 
 rate_all <- calc_annual_rate(lt_data)
+rate_adults <- calc_annual_rate(lt_data[age >= 20 & age < 65])
+rate_seniors <- calc_annual_rate(lt_data[age >= 65 & age < 85])
 rate_elderly <- calc_annual_rate(lt_data[age >= 85])
 
 rate_all[, Group := "Average (All Ages)"]
+rate_adults[, Group := "Adults (20-64)"]
+rate_seniors[, Group := "Seniors (65-84)"]
 rate_elderly[, Group := "Elderly (85+)"]
 
-plot_data_1 <- rbind(rate_all, rate_elderly)
+plot_data_1 <- rbind(rate_all, rate_adults, rate_seniors, rate_elderly)
 
 p1 <- ggplot(plot_data_1, aes(x = period, y = excess_rate, color = Group)) +
   geom_line(linewidth = 1.2) +
   geom_point(size = 2) +
-  scale_color_manual(values = c("Average (All Ages)" = "grey50", "Elderly (85+)" = "#d73027")) +
+  scale_color_manual(values = c(
+    "Average (All Ages)" = "grey50", 
+    "Adults (20-64)" = "#2c7bb6",
+    "Seniors (65-84)" = "#fdae61",
+    "Elderly (85+)" = "#d73027"
+  )) +
   # User requested gridlines every 5 years, but labels less frequent
   scale_x_continuous(breaks = seq(2020, 2095, 10), minor_breaks = seq(2020, 2095, 5), limits = c(2020, 2095)) +
   labs(
-    title = "Projected Escalation of Elderly Mortality Risk",
+    title = "Projected Escalation of Mortality Risk by Age",
     subtitle = "Annual Excess Death Risk per 100,000 people (SSP3-7.0)",
     y = "Excess Deaths / 100k",
     x = "Year",
