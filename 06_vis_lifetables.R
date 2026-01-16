@@ -10,14 +10,19 @@ library(patchwork) # For combining plots
 if(!dir.exists("plots")) dir.create("plots")
 
 # 1. Load Data
-dt <- fread("results_csv/romania_city_lifetables_full.csv")
-
 # Filter for Bucharest (RO001C) and a high emission scenario (SSP3) for dramatic effect
 city_code <- "RO001C" 
 target_ssp <- 3
 target_adapt <- "0%" # Worst case adaptation
 
-city_dt <- dt[URAU_CODE == city_code & ssp == target_ssp & adapt == target_adapt]
+# Construct path to individual city file
+file_path <- file.path("results_csv/individual_cities", paste0(city_code, "_lifetables.csv"))
+if (!file.exists(file_path)) stop("City data file not found: ", file_path)
+
+dt <- fread(file_path)
+
+# Filter for specific scenario
+city_dt <- dt[ssp == target_ssp & adapt == target_adapt]
 city_label <- unique(city_dt$LABEL)
 
 message("Generating plots for: ", city_label)

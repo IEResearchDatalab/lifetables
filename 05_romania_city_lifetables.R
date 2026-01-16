@@ -297,9 +297,10 @@ for(i in 1:nrow(groups)){
   }
   
   # Add attributable numbers per single age
+  # Rename columns to avoid overwriting 'n' (interval width) from the lifetable function
   res[, ":="(
-    n_no_cc = single_age_dt$death,
-    n_cc = single_age_dt$death + single_age_dt$an_clim,
+    deaths_no_cc = single_age_dt$death,
+    deaths_cc = single_age_dt$death + single_age_dt$an_clim,
     an_clim = single_age_dt$an_clim,
     an_full = single_age_dt$an_full,
     an_demo = single_age_dt$an_demo
@@ -317,5 +318,31 @@ final <- merge(final, meta, by = "URAU_CODE", all.x = TRUE)
 
 message("Done. Rows: ", nrow(final))
 if(!dir.exists("results_csv")) dir.create("results_csv")
-write.csv(final, "results_csv/romania_city_lifetables_full.csv", row.names = FALSE)
-message("Saved to results_csv/romania_city_lifetables_full.csv")
+
+# Create output folder for cities
+city_out_dir <- "results_csv/individual_cities"
+if(!dir.exists(city_out_dir)) dir.create(city_out_dir)
+
+# Split and save per city
+cities <- unique(final$URAU_CODE)
+
+# Avoid scientific notation in output
+old_scipen <- getOption("scipen")
+options(scipen = 999)
+
+message("Saving separate city files into ", city_out_dir, "...")
+pb_save <- txtProgressBar(min = 0, max = length(cities), style = 3)
+
+for(k in seq_along(cities)){
+  city_code <- cities[k]
+  city_data <- final[URAU_CODE == city_code]
+  
+  # Construct filename
+  fname <- file.path(city_out_dir, paste0(city_code, "_lifetables.csv"))
+  write.csv(city_data, fname, row.names = FALSE)
+  setTxtProgressBar(pb_save, k)
+}
+close(pb_save)
+options(scipen = old_scipen)
+
+message("Saved individual city files.")

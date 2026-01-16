@@ -42,8 +42,11 @@ The workflow integrates demographic projections with climate impact assessments 
     2.  **Interpolation**: Expands 5-year age group data (e.g., 20-24) into single years (20, 21, 22, 23, 24) using uniform distribution.
     3.  **Scenario Merging**: Joins the Baseline Demography with the Climate Attribution ($AN$).
     4.  **Mortality Adjustment**:
-        *   Calculates Baseline Rates ($m_x^{no\_cc}$).
+        *   Calculates Baseline Rates ($m_x^{no\_cc}$) using **Logarithmic Transformation** of Survival Probability (Constant Force of Mortality assumption) for standard intervals.
+            $$ m_x^{base} = -\frac{1}{n} \ln\left(1 - \frac{Deaths_{obs}}{Pop_{obs}}\right) $$
+            *Note: For the open-ended interval ($85+$) or high-mortality groups where $n \cdot m_x \ge 1$, the linear rate ($D/P$) is used.*
         *   Adds Climate Excess Rates ($AN_{clim} / Pop$) to get Adjusted Rates ($m_x^{cc}$).
+            $$ m_x^{cc} = m_x^{base} + \frac{AN_{clim}}{Pop} $$
     5.  **Actuarial Calculation (from Rate to Indicators)**:
         *   **Convert to Probability ($q_x$)**: Transform central rate to probability.
             $$ _nq_x = \frac{n \cdot _nm_x}{1 + (n - _na_x) \cdot _nm_x} $$
