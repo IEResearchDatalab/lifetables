@@ -148,6 +148,14 @@ generate_dashboard_for_ssp <- function(target_ssp) {
   rate_all[, Group := "Average (All Ages)"]
   rate_elderly[, Group := "Elderly (85+)"]
   plot_data_1 <- rbind(rate_all, rate_elderly)
+
+  # SSP 1 = RCP 2.6, SSP 2 = RCP 4.5, SSP 3 = RCP 7.0, SSP 5 = RCP 8.5
+  target_rcp <- switch(as.character(target_ssp),
+                       "1" = 2.6,
+                       "2" = 4.5,
+                       "3" = 7.0,
+                       "5" = 8.5,
+                       NA)
   
   p1 <- ggplot(plot_data_1, aes(x = period, y = excess_rate, color = Group)) +
     geom_line(linewidth = 1.2) +
@@ -156,7 +164,7 @@ generate_dashboard_for_ssp <- function(target_ssp) {
     scale_x_continuous(breaks = seq(2020, 2095, 10), minor_breaks = seq(2020, 2095, 5), limits = c(2020, 2095)) +
     labs(
       title = "Projected Escalation of Elderly Mortality Risk",
-      subtitle = sprintf("Annual Excess Death Risk per 100,000 people (SSP%d-7.0)", target_ssp),
+      subtitle = sprintf("Annual Excess Death Risk per 100,000 people (SSP%d-%.1f)", target_ssp, target_rcp),
       y = "Excess Deaths / 100k",
       x = "Year"
     ) +
