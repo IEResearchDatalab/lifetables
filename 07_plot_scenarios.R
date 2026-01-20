@@ -34,6 +34,90 @@ pq_data <- open_dataset("results_parquet/city_period.parquet") |> collect() |> s
 burden_data_all <- pq_data[city %in% ro_codes & adapt == "0%" & sc == "full"]
 
 # --------------------------------------------------------
+# Compute consistent Y-axis ranges across all SSPs for:
+# - excess death rates (per 100k)
+# - life expectancy at birth (Bucharest)
+# - cumulative total deaths
+# - burden shift (annual cold/heat deaths)
+# These will be applied to each SSP plot to ensure identical y-axes.
+# --------------------------------------------------------
+expand_limits <- function(minv, maxv){
+  if(is.na(minv) || is.na(maxv)) return(NULL)
+  if(maxv - minv < 1e-8){
+    minv <- minv - 0.5
+    maxv <- maxv + 0.5
+  }
+  range <- maxv - minv
+  minv <- minv - 0.05 * range
+  maxv <- maxv + 0.05 * range
+  return(c(minv, maxv))
+}
+
+# Prepare pop_est needed for rate calculations
+if("mx_no_cc" %in% names(lt_data) && "deaths_no_cc" %in% names(lt_data)){
+  lt_data[, pop_est := ifelse(mx_no_cc > 0, deaths_no_cc / mx_no_cc, 0)]
+} else {
+  lt_data[, pop_est := NA_real_]
+}
+
+# Excess rate (all ages + elderly)
+ex_all <- NULL
+if(!all(is.na(lt_data$pop_est))){
+  ex_all <- lt_data[, .(excess_rate = (sum(deaths_cc - deaths_no_cc, na.rm=TRUE) / sum(pop_est, na.rm=TRUE)) * 100000), by = .(period, ssp)]
+  ex_elder <- lt_data[age >= 85, .(excess_rate = (sum(deaths_cc - deaths_no_cc, na.rm=TRUE) / sum(pop_est, na.rm=TRUE)) * 100000), by = .(period, ssp)]
+  ex_combo <- rbind(ex_all, ex_elder)
+  if(nrow(ex_combo) > 0){
+    excess_y_min <- min(ex_combo$excess_rate, na.rm = TRUE)
+    excess_y_max <- max(ex_combo$excess_rate, na.rm = TRUE)
+    excess_y_limits <- expand_limits(excess_y_min, excess_y_max)
+  } else {
+    excess_y_limits <- NULL
+  }
+} else {
+  excess_y_limits <- NULL
+}
+
+# Life expectancy at birth for Bucharest (age 0)
+if(all(c("URAU_CODE", "age", "ex_no_cc", "ex_cc") %in% names(lt_data))){
+  le_buc <- lt_data[URAU_CODE == "RO001C" & age == 0, .(ex_no_cc, ex_cc, ssp, period)]
+  if(nrow(le_buc) > 0){
+    le_vals <- c(le_buc$ex_no_cc, le_buc$ex_cc)
+    le_y_limits <- expand_limits(min(le_vals, na.rm = TRUE), max(le_vals, na.rm = TRUE))
+  } else {
+    le_y_limits <- NULL
+  }
+} else {
+  le_y_limits <- NULL
+}
+
+# Cumulative total deaths
+if(all(c("deaths_cc", "deaths_no_cc") %in% names(lt_data))){
+  annual_excess_all <- lt_data[, .(excess = sum(deaths_cc - deaths_no_cc, na.rm=TRUE)), by = .(ssp, period)]
+  setorder(annual_excess_all, ssp, period)
+  annual_excess_all[, period_excess := excess * 5]
+  annual_excess_all[, cumulative := cumsum(period_excess), by = ssp]
+  if(nrow(annual_excess_all) > 0){
+    cum_y_limits <- expand_limits(min(annual_excess_all$cumulative, na.rm = TRUE), max(annual_excess_all$cumulative, na.rm = TRUE))
+  } else {
+    cum_y_limits <- NULL
+  }
+} else {
+  cum_y_limits <- NULL
+}
+
+# Burden shift limits (cold/heat annual deaths)
+if(all(c("period", "range", "an_est") %in% names(burden_data_all))){
+  burden_agg_all <- burden_data_all[, .(deaths = sum(an_est, na.rm=TRUE)), by = .(period, range, ssp)]
+  if(nrow(burden_agg_all) > 0){
+    burden_y_limits <- expand_limits(min(burden_agg_all$deaths, na.rm = TRUE), max(burden_agg_all$deaths, na.rm = TRUE))
+  } else {
+    burden_y_limits <- NULL
+  }
+} else {
+  burden_y_limits <- NULL
+}
+
+# --------------------------------------------------------
 # Function to Generate Dashboard for a Specific SSP
 # --------------------------------------------------------
 generate_dashboard_for_ssp <- function(target_ssp) {
@@ -78,6 +162,10 @@ generate_dashboard_for_ssp <- function(target_ssp) {
     ) +
     theme_minimal() +
     theme(legend.position = "bottom")
+  # Apply global excess rate limits if available
+  if(exists("excess_y_limits") && !is.null(excess_y_limits)){
+    p1 <- p1 + coord_cartesian(ylim = excess_y_limits)
+  }
   
   # --- Plot 2: Bucharest LE ---
   bucharest_le <- ssp_lt_data[URAU_CODE == "RO001C" & age == 0, .(period, ex_no_cc, ex_cc)]
@@ -102,6 +190,10 @@ generate_dashboard_for_ssp <- function(target_ssp) {
     ) +
     theme_minimal() +
     theme(legend.position = "bottom")
+  # Apply global life-expectancy limits if available
+  if(exists("le_y_limits") && !is.null(le_y_limits)){
+    p2 <- p2 + coord_cartesian(ylim = le_y_limits)
+  }
   
   # --- Plot 3: Cumulative Excess ---
   annual_excess <- ssp_lt_data[, .(excess = sum(deaths_cc - deaths_no_cc)), by = period]
@@ -124,6 +216,10 @@ generate_dashboard_for_ssp <- function(target_ssp) {
              label = sprintf("Total: >%s deaths", comma(max(annual_excess$cumulative, na.rm=T))), 
              hjust = 0, size = 5, fontface = "bold") +
     theme_minimal()
+  # Apply global cumulative-deaths limits if available
+  if(exists("cum_y_limits") && !is.null(cum_y_limits)){
+    p3 <- p3 + coord_cartesian(ylim = cum_y_limits)
+  }
   
   # --- Plot 4: Burden Shift ---
   burden_agg <- ssp_burden_data[, .(deaths = sum(an_est)), by = .(period, range)]
@@ -144,6 +240,10 @@ generate_dashboard_for_ssp <- function(target_ssp) {
     ) +
     theme_minimal() +
     theme(legend.position = "bottom")
+  # Apply global burden limits if available
+  if(exists("burden_y_limits") && !is.null(burden_y_limits)){
+    p4 <- p4 + coord_cartesian(ylim = burden_y_limits)
+  }
   
   # --- Combine and Save ---
   combined_plot <- (p1 + p2) / (p4 + p3) + 
