@@ -21,7 +21,7 @@ library(readxl)
 library(data.table)
 library(tidyr)
 
-source("../config.R")
+source("config.R")
 
 #------------------------------------------------------------------------------
 # Helper function to read and reshape Eurostat xlsx
