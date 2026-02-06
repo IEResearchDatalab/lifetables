@@ -1,14 +1,38 @@
 # Folders
 output*/
 temp/
+temp_results/
 JRC*/
 plots/
 figures/
+img/
 data/
+!data/extract_eurostat_projections.R
+!data/00_download_data.R
+!data/codebook.md
 results*/
 D4.4/
 appendices/
+.venv/
+.vscode/
 *.zip
+
+# LaTeX build artifacts
+*.aux
+*.log
+*.out
+*.toc
+*.bbl
+*.blg
+*.bcf
+*.run.xml
+*.fdb_latexmk
+*.fls
+*.synctex.gz
+*.pdf
+*.tex
+*.bib
+*.sty
 
 # History files
 .Rhistory
