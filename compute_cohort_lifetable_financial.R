@@ -204,7 +204,9 @@ apply_adaptation_vec <- function(rr_vec, temps, mmt, adapt_level) {
 }
 
 # Fast vectorized function to compute daily-step average RR for all ages
-compute_daily_avg_rr_all_ages <- function(temps, mmt_vec, adapt_level = 0) {
+# component: "total" (default), "heat" (days > MMT only), or "cold" (days <= MMT only)
+compute_daily_avg_rr_all_ages <- function(temps, mmt_vec, adapt_level = 0,
+                                          component = rr_component) {
   temps <- temps[!is.na(temps)]
   if (length(temps) == 0) return(rep(NA_real_, length(age_range)))
   
@@ -214,12 +216,20 @@ compute_daily_avg_rr_all_ages <- function(temps, mmt_vec, adapt_level = 0) {
   # Get RR values for all temperatures and ages at once
   rr_vals <- rr_single_age[temp_indices, , drop = FALSE]
   
-  # Apply adaptation for each age (vectorized)
+  # Apply adaptation and component filtering for each age (vectorized)
   avg_rr <- numeric(length(age_range))
   for (j in seq_along(age_range)) {
     mmt <- mmt_vec[j]
     rr_col <- rr_vals[, j]
     rr_adapted <- apply_adaptation_vec(rr_col, temps, mmt, adapt_level)
+    
+    # Component filtering: isolate heat or cold contribution
+    if (component == "heat") {
+      rr_adapted[temps <= mmt] <- 1
+    } else if (component == "cold") {
+      rr_adapted[temps > mmt] <- 1
+    }
+    
     avg_rr[j] <- mean(rr_adapted)
   }
   
@@ -232,6 +242,7 @@ compute_daily_avg_rr_all_ages <- function(temps, mmt_vec, adapt_level = 0) {
 
 cat("\nStep 8: Computing baseline reference RR for normalization...\n")
 cat(sprintf("  Baseline temperature period: %s\n", baseline_temp_label))
+cat(sprintf("  RR component: %s\n", rr_component))
 
 # Pool daily GCM temperatures over the baseline period across all GCMs.
 # Historical years (ssp == "hist") and early projection years (any SSP, as
@@ -740,6 +751,7 @@ cat(sprintf("  Baseline qx at age 60, 2050: %.6f (%.1f%% improvement)\n",
 
 cat("\n--- Baseline Temperature Reference ---\n")
 cat(sprintf("  Period: %s (climatological average from GCM data)\n", baseline_temp_label))
+cat(sprintf("  RR component: %s\n", rr_component))
 cat(sprintf("  Mean temperature: %.2f°C\n", mean(baseline_temps_all)))
 cat(sprintf("  Reference RR at age 20: %.4f\n", rr_baseline_by_age["20"]))
 

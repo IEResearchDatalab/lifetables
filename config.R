@@ -46,6 +46,13 @@ gcmexcl <- c("CMCC_CM2_SR5", "TaiESM1")
 ssp_codes  <- c("1", "2", "3")
 rcp_labels <- c("1" = "RCP 2.6", "2" = "RCP 4.5", "3" = "RCP 7.0")
 
+# ---- RR component for mortality multiplier ----
+# "total"  = full temperature-mortality curve (heat + cold effects)
+# "heat"   = heat-only: RR kept for days > MMT, set to 1 for cold days
+#            (isolates climate-change-driven heat risk; removes cold offset)
+# "cold"   = cold-only: RR kept for days <= MMT, set to 1 for heat days
+rr_component <- "heat"
+
 # ---- Adaptation scenarios (heat-risk attenuation by 2100) ----
 adaptation_levels <- c(0, 0.50, 0.90)
 adaptation_labels <- c("0%", "50%", "90%")

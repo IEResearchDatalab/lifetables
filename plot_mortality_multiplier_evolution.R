@@ -165,7 +165,19 @@ compute_avg_rr <- function(temps) {
   temps <- temps[!is.na(temps)]
   if (length(temps) == 0) return(rep(NA_real_, length(age_range)))
   idx <- sapply(temps, function(t) which.min(abs(temp_seq - t)))
-  colMeans(rr_single_age[idx, , drop = FALSE])
+  rr_vals <- rr_single_age[idx, , drop = FALSE]
+  # Component filtering
+  if (rr_component != "total") {
+    for (j in seq_along(age_range)) {
+      mmt <- mmt_single_age[j]
+      if (rr_component == "heat") {
+        rr_vals[temps <= mmt, j] <- 1
+      } else if (rr_component == "cold") {
+        rr_vals[temps > mmt, j] <- 1
+      }
+    }
+  }
+  colMeans(rr_vals)
 }
 
 # Helper: average RR for a temperature vector, per age-GROUP
@@ -173,7 +185,19 @@ compute_avg_rr_group <- function(temps) {
   temps <- temps[!is.na(temps)]
   if (length(temps) == 0) return(rep(NA_real_, length(agelabs)))
   idx <- sapply(temps, function(t) which.min(abs(temp_seq - t)))
-  colMeans(rr_matrix[idx, , drop = FALSE])
+  rr_vals <- rr_matrix[idx, , drop = FALSE]
+  # Component filtering
+  if (rr_component != "total") {
+    for (j in seq_along(agelabs)) {
+      mmt <- mmt_vec[j]
+      if (rr_component == "heat") {
+        rr_vals[temps <= mmt, j] <- 1
+      } else if (rr_component == "cold") {
+        rr_vals[temps > mmt, j] <- 1
+      }
+    }
+  }
+  colMeans(rr_vals)
 }
 
 #------------------------------------------------------------------------------
@@ -223,7 +247,14 @@ for (ssp_val in ssp_codes) {
 
       # Compute avg RR for 65-74 only (fast: single column)
       idx   <- sapply(temps, function(t) which.min(abs(temp_seq - t)))
-      avg_rr <- mean(rr_matrix[idx, focus_idx])
+      rr_col <- rr_matrix[idx, focus_idx]
+      # Apply heat/cold component filtering
+      if (rr_component == "heat") {
+        rr_col[temps <= mmt_vec[focus_idx]] <- 1
+      } else if (rr_component == "cold") {
+        rr_col[temps > mmt_vec[focus_idx]] <- 1
+      }
+      avg_rr <- mean(rr_col)
       mult   <- avg_rr / rr_baseline_by_group[focus_idx]
 
       gcm_results[[length(gcm_results) + 1]] <- data.table(
@@ -293,7 +324,14 @@ for (ag in focus_groups) {
       temps <- temps[!is.na(temps)]
       if (length(temps) == 0) next
       idx    <- sapply(temps, function(t) which.min(abs(temp_seq - t)))
-      avg_rr <- mean(rr_matrix[idx, ag_idx])
+      rr_col <- rr_matrix[idx, ag_idx]
+      # Apply heat/cold component filtering
+      if (rr_component == "heat") {
+        rr_col[temps <= mmt_vec[ag_idx]] <- 1
+      } else if (rr_component == "cold") {
+        rr_col[temps > mmt_vec[ag_idx]] <- 1
+      }
+      avg_rr <- mean(rr_col)
       gcm_mults <- c(gcm_mults, avg_rr / rr_baseline_by_group[ag_idx])
     }
 
@@ -391,7 +429,8 @@ p1 <- ggplot(plot_evol, aes(x = year, color = rcp_label, fill = rcp_label)) +
   labs(
     x = "Year", y = "Mortality Multiplier",
     title = sprintf("%s: Mortality Multiplier (65\u201374)", city_name),
-    subtitle = sprintf("Relative to %s baseline", baseline_temp_label)
+    subtitle = sprintf("%s RR — relative to %s baseline",
+                        tools::toTitleCase(rr_component), baseline_temp_label)
   ) +
   theme_ie(base_size = 11) +
   theme(legend.position = "bottom", legend.margin = margin(t = -5),
@@ -403,16 +442,16 @@ ggsave("plots/%s_mortality_multiplier_evolution.pdf" |> sprintf(city_name_lower)
        p1, width = 7, height = 4.5, device = cairo_pdf)
 
 writeLines(sprintf(
-  "Projected mortality multiplier for %s (age group 65--74) under three
+  "Projected %s mortality multiplier for %s (age group 65--74) under three
 Representative Concentration Pathways (RCP 2.6, 4.5, and 7.0), relative to the
 %s baseline. Solid lines represent the median across %d CMIP6 climate models;
 shaded bands indicate the 10th and 90th percentile range. The horizontal dashed
 line at 1.0 marks the baseline level. The mortality multiplier is computed
-as the ratio of projected annual mean relative risk (RR) to the %s baseline RR,
+as the ratio of projected annual mean %s relative risk (RR) to the %s baseline RR,
 using temperature-mortality exposure-response functions from the Multi-Country
 Multi-City (MCC) Collaborative Research Network.",
-  city_name, baseline_temp_label, length(gcm_cols),
-  baseline_temp_label
+  rr_component, city_name, baseline_temp_label, length(gcm_cols),
+  rr_component, baseline_temp_label
 ), sprintf("plots/%s_mortality_multiplier_evolution_caption.txt", city_name_lower))
 
 cat("  Saved.\n")
@@ -495,7 +534,8 @@ p3 <- ggplot(age_group_dt,
   labs(
     x = "Year", y = "Mortality Multiplier",
     title = sprintf("%s: Mortality Multiplier by Age Group", city_name),
-    subtitle = sprintf("Under RCP 4.5, relative to %s baseline",
+    subtitle = sprintf("Under RCP 4.5, %s RR — relative to %s baseline",
+                        rr_component,
                         baseline_temp_label)
   ) +
   theme_ie(base_size = 11) +

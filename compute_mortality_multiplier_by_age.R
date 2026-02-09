@@ -184,8 +184,23 @@ compute_avg_rr_by_age <- function(temps) {
     which.min(abs(temp_seq - t))
   })
   
+  # Get RR matrix for these temperature indices
+  rr_vals <- rr_single_age[temp_indices, , drop = FALSE]
+  
+  # Apply component filtering per age (heat/cold decomposition)
+  if (rr_component != "total") {
+    for (j in seq_along(age_range)) {
+      mmt <- mmt_single_age[j]
+      if (rr_component == "heat") {
+        rr_vals[temps <= mmt, j] <- 1
+      } else if (rr_component == "cold") {
+        rr_vals[temps > mmt, j] <- 1
+      }
+    }
+  }
+  
   # Average RR across all days for each age
-  avg_rr <- colMeans(rr_single_age[temp_indices, , drop = FALSE])
+  avg_rr <- colMeans(rr_vals)
   return(avg_rr)
 }
 
@@ -194,6 +209,7 @@ compute_avg_rr_by_age <- function(temps) {
 #------------------------------------------------------------------------------
 
 cat(sprintf("\nComputing baseline RR (%s) by age...\n", baseline_temp_label))
+cat(sprintf("  RR component: %s\n", rr_component))
 
 # Pool daily GCM temperatures over the baseline period
 baseline_hist <- proj_data[ssp == "hist" & year %in% baseline_temp_period]
