@@ -22,7 +22,7 @@ img_dir <- "img"
 
 # ---- Cohort parameters ----
 cohort_start_age  <- 20      # Starting age of the cohort
-cohort_start_year <- 2023    # Calendar year at cohort start
+cohort_start_year <- 2019    # Calendar year at cohort start
 cohort_end_year   <- 2099    # Calendar year at cohort end
 
 # ---- Interest rate for EPV calculations ----
