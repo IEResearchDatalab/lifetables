@@ -7,7 +7,6 @@
 #
 ################################################################################
 
-library(terra)
 library(data.table)
 library(arrow)
 library(dplyr)
@@ -64,36 +63,10 @@ age_range <- 20:100
 target_ssp <- "3"
 
 #------------------------------------------------------------------------------
-# Step 1: Load 2023 ERA5 temperature data for Bucharest (baseline)
+# Step 1: Load projected temperature data (includes historical baseline)
 #------------------------------------------------------------------------------
 
-cat("Loading 2023 ERA5 temperature data...\n")
-
-nc_files <- list.files("data/2023_temp", pattern = paste0(city_name_lower, "_2023_\\d{2}\\.nc$"),
-                       full.names = TRUE)
-nc_files <- sort(nc_files)
-
-temp_2023_list <- lapply(nc_files, function(f) {
-  r <- rast(f)
-  vals <- global(r, "mean", na.rm = TRUE)$mean
-  vals_celsius <- vals - 273.15
-  month <- as.numeric(gsub(".*_(\\d{2})\\.nc$", "\\1", f))
-  n_days <- nlyr(r)
-  start_date <- as.Date(paste0("2023-", sprintf("%02d", month), "-01"))
-  dates <- seq(start_date, by = "day", length.out = n_days)
-  data.table(date = dates, tmean_2023 = vals_celsius)
-})
-
-temp_2023 <- rbindlist(temp_2023_list)
-temp_2023 <- temp_2023[order(date)]
-
-cat(sprintf("Loaded %d days of 2023 temperature data\n", nrow(temp_2023)))
-
-#------------------------------------------------------------------------------
-# Step 2: Load projected temperature data
-#------------------------------------------------------------------------------
-
-cat("\nLoading projected temperature data...\n")
+cat("Loading projected temperature data...\n")
 
 proj_data <- open_dataset("data/tmeanproj.gz.parquet") %>%
   filter(URAU_CODE == city_code) %>%
@@ -108,7 +81,7 @@ gcm_cols <- gcm_cols[!gsub("tas_", "", gcm_cols) %in% gcmexcl]
 cat(sprintf("Using %d GCMs\n", length(gcm_cols)))
 
 #------------------------------------------------------------------------------
-# Step 3: Load RR coefficients for all age groups
+# Step 2: Load RR coefficients for all age groups
 #------------------------------------------------------------------------------
 
 cat("\nLoading RR coefficients...\n")
@@ -119,7 +92,7 @@ coefs_city <- coefs_all[URAU_CODE == city_code]
 cat(sprintf("Loaded coefficients for %d age groups\n", nrow(coefs_city)))
 
 #------------------------------------------------------------------------------
-# Step 4: Define basis function parameters using historical data
+# Step 3: Define basis function parameters using historical data
 #------------------------------------------------------------------------------
 
 cat("\nDefining basis function parameters...\n")
@@ -136,7 +109,7 @@ argvar <- list(fun = varfun, degree = vardegree, knots = varknots, Bound = varbo
 cat(sprintf("Historical temperature range: %.1f°C to %.1f°C\n", varbound[1], varbound[2]))
 
 #------------------------------------------------------------------------------
-# Step 5: Compute RR curves for each age group and find MMT
+# Step 4: Compute RR curves for each age group and find MMT
 #------------------------------------------------------------------------------
 
 cat("\nComputing RR curves for each age group...\n")
@@ -175,7 +148,7 @@ for (i in seq_along(agelabs)) {
 }
 
 #------------------------------------------------------------------------------
-# Step 6: Interpolate RR to single-year ages
+# Step 5: Interpolate RR to single-year ages
 #------------------------------------------------------------------------------
 
 cat("\nInterpolating RR to single-year ages...\n")
@@ -199,7 +172,7 @@ mmt_single_age <- approx(x = age_midpoints, y = mmt_vec,
 cat(sprintf("Interpolated to %d single-year ages (20-100)\n", length(age_range)))
 
 #------------------------------------------------------------------------------
-# Step 7: Function to compute average RR for a temperature vector at each age
+# Step 6: Function to compute average RR for a temperature vector at each age
 #------------------------------------------------------------------------------
 
 compute_avg_rr_by_age <- function(temps) {
@@ -217,17 +190,27 @@ compute_avg_rr_by_age <- function(temps) {
 }
 
 #------------------------------------------------------------------------------
-# Step 8: Compute average RR for 2023 baseline (by age)
+# Step 7: Compute average RR for baseline period (by age)
 #------------------------------------------------------------------------------
 
-cat("\nComputing 2023 baseline RR by age...\n")
+cat(sprintf("\nComputing baseline RR (%s) by age...\n", baseline_temp_label))
 
-rr_2023_by_age <- compute_avg_rr_by_age(temp_2023$tmean_2023)
+# Pool daily GCM temperatures over the baseline period
+baseline_hist <- proj_data[ssp == "hist" & year %in% baseline_temp_period]
+baseline_proj <- proj_data[ssp %in% ssp_codes & year %in% baseline_temp_period & year > 2014]
 
-cat(sprintf("Baseline RR range: %.4f to %.4f\n", min(rr_2023_by_age), max(rr_2023_by_age)))
+baseline_temps_all <- c(
+  unlist(baseline_hist[, ..gcm_cols], use.names = FALSE),
+  unlist(baseline_proj[, ..gcm_cols], use.names = FALSE)
+)
+baseline_temps_all <- baseline_temps_all[!is.na(baseline_temps_all)]
+
+rr_baseline_by_age <- compute_avg_rr_by_age(baseline_temps_all)
+
+cat(sprintf("Baseline RR range: %.4f to %.4f\n", min(rr_baseline_by_age), max(rr_baseline_by_age)))
 
 #------------------------------------------------------------------------------
-# Step 9: Compute average RR for target years (averaging across GCMs)
+# Step 8: Compute average RR for target years (averaging across GCMs)
 #------------------------------------------------------------------------------
 
 cat("\nComputing projected RR by age for target years...\n")
@@ -249,7 +232,7 @@ for (yr in target_years) {
   avg_rr <- compute_avg_rr_by_age(all_temps)
   
   # Compute multiplier
-  multiplier <- avg_rr / rr_2023_by_age
+  multiplier <- avg_rr / rr_baseline_by_age
   
   results_list[[as.character(yr)]] <- data.table(
     year = yr,
@@ -267,14 +250,14 @@ print(results[, .(min_mult = min(multiplier), max_mult = max(multiplier),
                    mult_at_65 = multiplier[age == 65]), by = year])
 
 #------------------------------------------------------------------------------
-# Step 10: Save results
+# Step 9: Save results
 #------------------------------------------------------------------------------
 
 cat("\nSaving results...\n")
 fwrite(results, sprintf("results_csv/%s_mortality_multiplier_by_age.csv", city_name_lower))
 
 #------------------------------------------------------------------------------
-# Step 11: Create visualization
+# Step 10: Create visualization
 #------------------------------------------------------------------------------
 
 cat("\nCreating visualization...\n")
@@ -300,7 +283,7 @@ p <- ggplot(results, aes(x = age, y = multiplier, color = year_label)) +
     x = "Age",
     y = "Mortality Multiplier",
     title = sprintf("%s: Mortality Multiplier by Age", city_name),
-    subtitle = "Under RCP 7.0, relative to 2023 baseline"
+    subtitle = sprintf("Under RCP 7.0, relative to %s baseline", baseline_temp_label)
   ) +
   # Theme
   theme_ie(base_size = 11) +

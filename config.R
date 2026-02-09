@@ -54,9 +54,16 @@ adaptation_labels <- c("0%", "50%", "90%")
 t0_adapt <- 2020
 tf_adapt <- 2100
 
-# ---- Historical reference period ----
+# ---- Historical reference period (for RR coefficient derivation) ----
 histrange       <- c(2000, 2014)
 hist_ref_period <- 2000:2014
+
+# ---- Baseline temperature period (for mortality multiplier normalization) ----
+# Uses GCM climatological average over this period as the reference RR.
+# A 30-year average (WMO climate normal) is more robust than a single year.
+# Years 1981-2014 come from ssp=="hist", years 2015+ from early projections.
+baseline_temp_period <- 1990:2019
+baseline_temp_label  <- "1990-2019"
 
 # ---- Temperature percentiles ----
 predper <- c(seq(0, 1, 0.1), 2:98, seq(99, 100, 0.1))

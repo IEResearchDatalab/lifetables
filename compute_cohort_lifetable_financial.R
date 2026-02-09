@@ -3,7 +3,10 @@
 # Cohort Life Table and Financial Impact Analysis
 # 
 # This script computes a cohort life table for a population starting at age 20
-# in 2023, following them through 2099, with climate-adjusted mortality rates.
+# in the cohort start year, following them through 2099, with climate-adjusted
+# mortality rates. The baseline temperature reference uses a multi-year GCM
+# climatological average (configurable via baseline_temp_period in config.R)
+# rather than a single year of observed data.
 #
 # Key features:
 # - Mortality multipliers with RR >= 1 constraint
@@ -17,7 +20,6 @@
 #
 ################################################################################
 
-library(terra)
 library(data.table)
 library(arrow)
 library(dplyr)
@@ -53,7 +55,7 @@ qx_to_mx <- function(qx, ax) {
 }
 
 #------------------------------------------------------------------------------
-# Step 1: Load 2023 ERA5 Temperature Data (Baseline)
+# Step 1: Header and Configuration Summary
 #------------------------------------------------------------------------------
 
 cat("=" %+% Rep("=", 70) %+% "\n")
@@ -61,31 +63,8 @@ cat("COHORT LIFE TABLE AND FINANCIAL IMPACT ANALYSIS\n")
 cat("City: ", city_name, " (", city_code, ")\n", sep = "")
 cat("Cohort: Age ", cohort_start_age, " in ", cohort_start_year, 
     " through ", cohort_end_year, "\n", sep = "")
+cat("Baseline temperature period: ", baseline_temp_label, "\n", sep = "")
 cat("=" %+% Rep("=", 70) %+% "\n\n")
-
-cat("Step 1: Loading 2023 ERA5 temperature data...\n")
-
-nc_files <- list.files("data/2023_temp", pattern = paste0(city_name_lower, "_2023_\\d{2}\\.nc$"), 
-                       full.names = TRUE)
-nc_files <- sort(nc_files)
-
-temp_2023_list <- lapply(nc_files, function(f) {
-  r <- rast(f)
-  vals <- global(r, "mean", na.rm = TRUE)$mean
-  vals_celsius <- vals - 273.15
-  month <- as.numeric(gsub(".*_(\\d{2})\\.nc$", "\\1", f))
-  n_days <- nlyr(r)
-  start_date <- as.Date(paste0("2023-", sprintf("%02d", month), "-01"))
-  dates <- seq(start_date, by = "day", length.out = n_days)
-  data.table(date = dates, tmean = vals_celsius)
-})
-
-temp_2023 <- rbindlist(temp_2023_list)
-temp_2023 <- temp_2023[order(date)]
-
-cat(sprintf("  Loaded %d days of 2023 temperature data\n", nrow(temp_2023)))
-cat(sprintf("  Temperature range: %.1f°C to %.1f°C\n", 
-            min(temp_2023$tmean), max(temp_2023$tmean)))
 
 #------------------------------------------------------------------------------
 # Step 2: Load Projected Temperature Data
@@ -248,29 +227,48 @@ compute_daily_avg_rr_all_ages <- function(temps, mmt_vec, adapt_level = 0) {
 }
 
 #------------------------------------------------------------------------------
-# Step 8: Compute 2023 Reference RR (Used for Normalization)
+# Step 8: Compute Baseline Reference RR (Used for Normalization)
 #------------------------------------------------------------------------------
 
-cat("\nStep 8: Computing 2023 reference RR for normalization...\n")
+cat("\nStep 8: Computing baseline reference RR for normalization...\n")
+cat(sprintf("  Baseline temperature period: %s\n", baseline_temp_label))
 
-# Use 2023 ERA5 data as the reference to ensure M_{x,2023,g} = 1.0 exactly
-rr_2023_by_age <- compute_daily_avg_rr_all_ages(temp_2023$tmean, mmt_single_age, 0)
-names(rr_2023_by_age) <- age_range
+# Pool daily GCM temperatures over the baseline period across all GCMs.
+# Historical years (ssp == "hist") and early projection years (any SSP, as
+# forcings barely diverge before ~2030) are combined.
+baseline_hist <- proj_data[ssp == "hist" & year %in% baseline_temp_period]
+baseline_proj <- proj_data[ssp %in% ssp_codes & year %in% baseline_temp_period & year > 2014]
 
-cat(sprintf("  2023 reference RR range: %.4f to %.4f\n", 
-            min(rr_2023_by_age), max(rr_2023_by_age)))
+# Pool all daily temperatures from all GCMs
+baseline_temps_hist <- unlist(baseline_hist[, ..gcm_cols], use.names = FALSE)
+baseline_temps_proj <- unlist(baseline_proj[, ..gcm_cols], use.names = FALSE)
+baseline_temps_all  <- c(baseline_temps_hist, baseline_temps_proj)
+baseline_temps_all  <- baseline_temps_all[!is.na(baseline_temps_all)]
+
+cat(sprintf("  Pooled %s daily temperature values for baseline\n",
+            format(length(baseline_temps_all), big.mark = ",")))
+cat(sprintf("  Baseline temperature range: %.1f°C to %.1f°C\n",
+            min(baseline_temps_all), max(baseline_temps_all)))
+cat(sprintf("  Baseline mean temperature: %.2f°C\n", mean(baseline_temps_all)))
+
+# Compute baseline RR by age using the climatological temperature distribution
+rr_baseline_by_age <- compute_daily_avg_rr_all_ages(baseline_temps_all, mmt_single_age, 0)
+names(rr_baseline_by_age) <- age_range
+
+cat(sprintf("  Baseline reference RR range: %.4f to %.4f\n", 
+            min(rr_baseline_by_age), max(rr_baseline_by_age)))
 
 #------------------------------------------------------------------------------
-# Step 9: Validation - Confirm Multiplier at 2023 = 1.0
+# Step 9: Validation - Baseline multiplier check
 #------------------------------------------------------------------------------
 
 cat("\nStep 9: Validation check...\n")
 
-# Since we use 2023 as reference, multiplier at 2023 = RR_2023 / RR_2023 = 1.0
-multiplier_2023 <- rr_2023_by_age / rr_2023_by_age  # All equal to 1
-
-cat(sprintf("  Multiplier at age 20, year 2023: %.6f (should be exactly 1.0)\n", 
-            multiplier_2023["20"]))
+# The multiplier at cohort_start_year will NOT be exactly 1.0 anymore,
+# since the baseline is now a climatological average, not a single year.
+# This is expected: years warmer than the 1990-2019 average will have M > 1.
+cat("  Note: With a multi-year climatological baseline, multipliers at\n")
+cat("  cohort start year are expected to be > 1 (climate already warmer).\n")
 
 #------------------------------------------------------------------------------
 # Step 10: Load Eurostat Projected Mortality Data
@@ -292,16 +290,17 @@ cat(sprintf("  Loaded Eurostat projections: %d records\n", nrow(mort_proj)))
 cat(sprintf("  Age range: %d to %d\n", min(mort_proj$age), max(mort_proj$age)))
 cat(sprintf("  Year range: %d to %d\n", min(mort_proj$year), max(mort_proj$year)))
 
-# Verify coverage for our cohort (age 20 in 2023 -> age 96 in 2099)
-cohort_check <- mort_proj[year == 2023 & age == 20]
+# Verify coverage for our cohort
+cohort_check <- mort_proj[year == cohort_start_year & age == cohort_start_age]
 if (nrow(cohort_check) == 0) {
-  stop("Missing 2023 data for age 20 in mortality projections!")
+  stop(sprintf("Missing %d data for age %d in mortality projections!",
+               cohort_start_year, cohort_start_age))
 }
-cat(sprintf("  Cohort start qx (age 20, 2023): %.6f\n", cohort_check$qx[1]))
+cat(sprintf("  Cohort start qx (age %d, %d): %.6f\n",
+            cohort_start_age, cohort_start_year, cohort_check$qx[1]))
 
-# Create baseline lookup table (for compatibility with existing code)
-# This is used for the reference period normalization
-baseline_lt <- mort_proj[year == 2023, .(age, qx, mx, ax)]
+# Create baseline lookup table
+baseline_lt <- mort_proj[year == cohort_start_year, .(age, qx, mx, ax)]
 setkey(baseline_lt, age)
 
 #------------------------------------------------------------------------------
@@ -329,8 +328,8 @@ for (ssp_val in ssp_codes) {
     cat(sprintf("    Adaptation: %s\n", adapt_lab))
     
     for (yr in cohort_years) {
-      # Skip 2023 (use baseline)
-      if (yr < 2024) next
+      # Skip cohort start year (handled separately as baseline_mult)
+      if (yr == cohort_start_year) next
       
       year_data <- ssp_data[year == yr]
       if (nrow(year_data) == 0) next
@@ -346,7 +345,7 @@ for (ssp_val in ssp_codes) {
       
       # Compute multiplier for all ages at once (vectorized)
       avg_rr_vec <- compute_daily_avg_rr_all_ages(all_temps, mmt_single_age, adapt_t)
-      multiplier_vec <- avg_rr_vec / rr_2023_by_age
+      multiplier_vec <- avg_rr_vec / rr_baseline_by_age
       
       # Store results for all ages
       mult_results[[length(mult_results) + 1]] <- data.table(
@@ -364,16 +363,32 @@ for (ssp_val in ssp_codes) {
 
 multipliers <- rbindlist(mult_results)
 
-# Add 2023 baseline (multiplier = 1 for all)
+# Add cohort start year entry
+# With a historical baseline, the start year multiplier may be > 1.
+# Compute the start year's RR from GCM data for proper normalization.
+start_year_data_hist <- proj_data[ssp == "hist" & year == cohort_start_year]
+start_year_data_proj <- proj_data[ssp %in% ssp_codes & year == cohort_start_year & year > 2014]
+start_year_temps <- c(
+  unlist(start_year_data_hist[, ..gcm_cols], use.names = FALSE),
+  unlist(start_year_data_proj[, ..gcm_cols], use.names = FALSE)
+)
+start_year_temps <- start_year_temps[!is.na(start_year_temps)]
+rr_start_year <- compute_daily_avg_rr_all_ages(start_year_temps, mmt_single_age, 0)
+multiplier_start_year <- rr_start_year / rr_baseline_by_age
+names(multiplier_start_year) <- age_range
+
 baseline_mult <- CJ(
-  year = 2023,
+  year = cohort_start_year,
   age = age_range,
   ssp = ssp_codes,
   adaptation = adaptation_labels
 )
 baseline_mult[, rcp := rcp_labels[ssp]]
-baseline_mult[, avg_rr := rr_2023_by_age[as.character(age)], by = age]
-baseline_mult[, multiplier := multiplier_2023[as.character(age)], by = age]
+baseline_mult[, avg_rr := rr_start_year[as.character(age)], by = age]
+baseline_mult[, multiplier := multiplier_start_year[as.character(age)], by = age]
+
+cat(sprintf("  Multiplier at cohort start (age 20, %d): %.4f\n",
+            cohort_start_year, multiplier_start_year["20"]))
 
 multipliers <- rbind(baseline_mult, multipliers)
 setkey(multipliers, ssp, adaptation, year, age)
@@ -426,7 +441,7 @@ build_cohort_lifetable <- function(mort_proj_dt, mult_dt, ssp_val, adapt_lab) {
                       .(year, age, multiplier)],
               by = c("year", "age"), all.x = TRUE)
   
-  # Fill missing multipliers with 1 (baseline year 2023 or years without climate data)
+  # Fill missing multipliers with 1 (years without climate data)
   lt[is.na(multiplier), multiplier := 1]
   
   # Climate-adjusted mortality rate = baseline (with improvement) × climate multiplier
@@ -634,31 +649,32 @@ output_lt <- all_lifetables[, .(
 )]
 
 #------------------------------------------------------------------------------
-# Step 15: Create Validation Data (2023 Temperature Distribution)
+# Step 15: Create Validation Data (Baseline Temperature Distribution)
 #------------------------------------------------------------------------------
 
 cat("\nStep 15: Creating validation data...\n")
 
-# Temperature distribution for 2023
-temp_dist_2023 <- temp_2023[, .(n_days = .N), by = .(temp_bin = round(tmean))]
-temp_dist_2023 <- temp_dist_2023[order(temp_bin)]
-temp_dist_2023[, proportion := n_days / sum(n_days)]
+# Temperature distribution for baseline period
+temp_dist_baseline <- data.table(tmean = baseline_temps_all)
+temp_dist_baseline <- temp_dist_baseline[, .(n_days = .N), by = .(temp_bin = round(tmean))]
+temp_dist_baseline <- temp_dist_baseline[order(temp_bin)]
+temp_dist_baseline[, proportion := n_days / sum(n_days)]
 
-# Validation: Multiplier at age 20, year 2023 should be exactly 1
+# Validation summary
 validation_summary <- data.table(
-  metric = c("Mean temperature 2023", 
-             "Min temperature 2023", 
-             "Max temperature 2023",
-             "Number of days 2023",
-             "Multiplier at age 20, 2023",
-             "Reference RR at age 20 (2023)",
+  metric = c(sprintf("Mean temperature %s", baseline_temp_label),
+             sprintf("Min temperature %s", baseline_temp_label),
+             sprintf("Max temperature %s", baseline_temp_label),
+             sprintf("Number of daily values %s", baseline_temp_label),
+             sprintf("Multiplier at age 20, %d", cohort_start_year),
+             sprintf("Reference RR at age 20 (%s)", baseline_temp_label),
              "Interest rate used"),
-  value = c(mean(temp_2023$tmean),
-            min(temp_2023$tmean),
-            max(temp_2023$tmean),
-            nrow(temp_2023),
-            multiplier_2023["20"],
-            rr_2023_by_age["20"],
+  value = c(mean(baseline_temps_all),
+            min(baseline_temps_all),
+            max(baseline_temps_all),
+            length(baseline_temps_all),
+            multiplier_start_year["20"],
+            rr_baseline_by_age["20"],
             interest_rate)
 )
 
@@ -680,8 +696,8 @@ fwrite(epv_summary, sprintf("results_csv/%s_financial_impact_summary.csv", city_
 cat(sprintf("  Saved: results_csv/%s_financial_impact_summary.csv\n", city_name_lower))
 
 # Save validation data
-fwrite(temp_dist_2023, sprintf("results_csv/%s_2023_temp_distribution.csv", city_name_lower))
-cat(sprintf("  Saved: results_csv/%s_2023_temp_distribution.csv\n", city_name_lower))
+fwrite(temp_dist_baseline, sprintf("results_csv/%s_baseline_temp_distribution.csv", city_name_lower))
+cat(sprintf("  Saved: results_csv/%s_baseline_temp_distribution.csv\n", city_name_lower))
 
 fwrite(validation_summary, sprintf("results_csv/%s_validation_summary.csv", city_name_lower))
 cat(sprintf("  Saved: results_csv/%s_validation_summary.csv\n", city_name_lower))
@@ -711,15 +727,26 @@ cat("  Source: Eurostat EUROPOP2019 Regional Projections (proj_19raasmr3 + proj_
 cat("  Region: București (Bucharest) - NUTS 3\n")
 cat("  Years: 2019-2100 (with built-in mortality improvement assumptions)\n")
 cat("  Sex: Population-weighted combination of male and female\n")
-cat(sprintf("  Baseline qx at age 20, 2023: %.6f\n", mort_proj[year == 2023 & age == 20, qx]))
-cat(sprintf("  Baseline qx at age 60, 2023: %.6f\n", mort_proj[year == 2023 & age == 60, qx]))
+cat(sprintf("  Baseline qx at age %d, %d: %.6f\n",
+            cohort_start_age, cohort_start_year,
+            mort_proj[year == cohort_start_year & age == cohort_start_age, qx]))
+cat(sprintf("  Baseline qx at age 60, %d: %.6f\n",
+            cohort_start_year,
+            mort_proj[year == cohort_start_year & age == 60, qx]))
 cat(sprintf("  Baseline qx at age 60, 2050: %.6f (%.1f%% improvement)\n", 
             mort_proj[year == 2050 & age == 60, qx],
-            (1 - mort_proj[year == 2050 & age == 60, qx] / mort_proj[year == 2023 & age == 60, qx]) * 100))
+            (1 - mort_proj[year == 2050 & age == 60, qx] /
+                 mort_proj[year == cohort_start_year & age == 60, qx]) * 100))
+
+cat("\n--- Baseline Temperature Reference ---\n")
+cat(sprintf("  Period: %s (climatological average from GCM data)\n", baseline_temp_label))
+cat(sprintf("  Mean temperature: %.2f°C\n", mean(baseline_temps_all)))
+cat(sprintf("  Reference RR at age 20: %.4f\n", rr_baseline_by_age["20"]))
 
 cat("\n--- Validation ---\n")
-cat(sprintf("  Climate mortality multiplier at age 20, 2023: %.6f\n", multiplier_2023["20"]))
-cat("  (Should be 1.0 for proper normalization - climate effect relative to 2023 baseline)\n")
+cat(sprintf("  Climate mortality multiplier at age 20, %d: %.6f\n",
+            cohort_start_year, multiplier_start_year["20"]))
+cat("  (With a historical baseline, start-year multiplier > 1 is expected)\n")
 
 cat("\n--- Financial Impact Summary (% Change vs Baseline) ---\n")
 cat("\nDeferred Term Annuity-Due (45|20 äx, payments ages 65-84):\n")
