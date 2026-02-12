@@ -74,3 +74,6 @@ vignettes/*.pdf
 
 # R Environment Variables
 .Renviron
+
+# data
+cordex_data/
