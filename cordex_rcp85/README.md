@@ -84,10 +84,34 @@ bash cordex_rcp85/run_processing.sh
 The script will:
 1. Check dependencies (auto-install missing R packages)
 2. Read all NetCDF files in `cordex_data/raw/`
-3. Extract temperature for each city (nearest grid point)
+3. Extract temperature for each city (nearest grid point by default; polygon mean optional)
 4. Convert Kelvin → Celsius
 5. Reshape to wide format (one column per model)
 6. Output to `cordex_data/processed/tmeanproj_rcp85.gz.parquet`
+
+### (Optional) Use Urban Audit polygons (Masselot-style aggregation)
+
+To match the paper’s “average all pixels whose centroids fall within the city boundary” approach,
+provide Urban Audit city polygons and run `process_to_parquet.R` with `--city-polygons=...`.
+
+This repo includes a helper downloader using the Eurostat GISCO API (via the `giscoR` R package):
+
+```bash
+Rscript data/01_download_urban_audit_boundaries.R --year=2020 --out=data/urban_audit_cities_2020.gpkg
+```
+
+Then run polygon mode:
+
+```bash
+Rscript cordex_rcp85/process_to_parquet.R --city-polygons=data/urban_audit_cities_2020.gpkg
+```
+
+By default, the script still processes the repo’s 58-city list (capitals + Romanian cities).
+To process *all* Urban Audit CITIES polygons in the GeoPackage, add:
+
+```bash
+Rscript cordex_rcp85/process_to_parquet.R --city-polygons=data/urban_audit_cities_2020.gpkg --cities-from-polygons
+```
 
 ### Output Format
 
