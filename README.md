@@ -24,8 +24,9 @@ The following additional files must be located inside the root folder. These fil
 
 - `cordex_data/` - CORDEX EUR-11 RCP8.5 projections. Download and process with `cordex_rcp85/` scripts. You will find a README in that folder with instructions.
 - `data/2023_temp/` - ERA5 daily mean temperature for 2023. Download with `data/2023_temp/download_era5_2023.py`.
-- `data/POP106A.csv` and `data/POP206K.csv` - ToDo.
 - `data/2.62.csv` and `data/2.63.csv` - ToDo.
+- `data/POP106A.csv` and `data/POP206K.csv` - ToDo.
+- `data/urban_audit_cities_2020.gpkg` - ToDo.
 
 ---
 
