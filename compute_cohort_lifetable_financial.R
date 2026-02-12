@@ -784,6 +784,54 @@ summary_90 <- epv_summary[adaptation == "90%",
                              reserve_ins_pct = sprintf("%+.2f", pct_delta_reserve_ins))]
 print(summary_90)
 
+cat("\n--- Writing LaTeX Summary Table ---\n")
+
+rcp_order <- c("RCP 2.6", "RCP 4.5", "RCP 7.0", "RCP 8.5")
+rcp_header <- c("2.6", "4.5", "7.0", "8.5")
+adapt_order <- c("0%", "50%", "90%")
+adapt_display <- c("0\\%", "50\\%", "90\\%")
+
+format_pct <- function(x) sprintf("%+.2f", x)
+latex_val <- function(x) sprintf("$%s$", format_pct(x))
+
+build_rows <- function(quantity_label, value_col) {
+  rows <- character(0)
+  for (i in seq_along(adapt_order)) {
+    adapt <- adapt_order[i]
+    adapt_label <- adapt_display[i]
+    row_vals <- vapply(rcp_order, function(rcp_val) {
+      val <- epv_summary[rcp == rcp_val & adaptation == adapt, get(value_col)]
+      val <- val[1]
+      if (length(val) == 0 || is.na(val)) "NA" else latex_val(val)
+    }, character(1))
+    label <- if (i == 1) quantity_label else ""
+    row_text <- paste(c(label, adapt_label, row_vals), collapse = " & ")
+    rows <- c(rows, paste0(row_text, " ", intToUtf8(92), intToUtf8(92)))
+  }
+  rows
+}
+
+header_rcp <- paste(c("", "", "\\textbf{RCP}", "", "", ""), collapse = " & ")
+header_cols <- paste(c("\\textbf{Quantity (\\%)}", "\\textbf{Adaptation}",
+                       sprintf("\\textbf{%s}", rcp_header)), collapse = " & ")
+
+tex_lines <- c(
+  "\\begin{tabular}{llrrrr}",
+  "\\toprule",
+  paste0(header_rcp, " ", intToUtf8(92), intToUtf8(92)),
+  paste0(header_cols, " ", intToUtf8(92), intToUtf8(92)),
+  "\\midrule",
+  build_rows("Annuity EPV", "pct_delta_annuity"),
+  "\\midrule",
+  build_rows("Life insurance EPV", "pct_delta_insurance"),
+  "\\bottomrule",
+  "\\end{tabular}"
+)
+
+tex_file <- sprintf("img/%s_financial_impact_summary.tex", city_name_lower)
+writeLines(tex_lines, tex_file)
+cat(sprintf("  Saved: %s\n", tex_file))
+
 cat("\n" %+% Rep("=", 70) %+% "\n")
 cat("DONE!\n")
 cat(Rep("=", 70) %+% "\n")
