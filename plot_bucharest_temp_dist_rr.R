@@ -121,6 +121,13 @@ temp_long <- melt(raw_data,
                   value.name = "temperature")
 temp_long[, gcm := gsub("tas_", "", gcm)]
 
+ssp_min_years <- temp_long[ssp != "hist", .(min_year = min(year, na.rm = TRUE)), by = ssp]
+if (nrow(ssp_min_years) > 0) {
+  common_start_year <- max(ssp_min_years$min_year, na.rm = TRUE)
+  temp_long <- temp_long[ssp == "hist" | year >= common_start_year]
+  cat(sprintf("Aligned scenario start year: %d\n", common_start_year))
+}
+
 gcm_exclude <- c("CMCC_CM2_SR5", "TaiESM1")
 temp_long <- temp_long[!gcm %in% gcm_exclude]
 

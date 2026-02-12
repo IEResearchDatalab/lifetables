@@ -118,6 +118,13 @@ temp_long <- melt(temp_raw,
 # Extract year from date
 temp_long[, year := year(date)]
 
+ssp_min_years <- temp_long[ssp != "hist", .(min_year = min(year, na.rm = TRUE)), by = ssp]
+if (nrow(ssp_min_years) > 0) {
+  common_start_year <- max(ssp_min_years$min_year, na.rm = TRUE)
+  temp_long <- temp_long[ssp == "hist" | year >= common_start_year]
+  cat(sprintf("Aligned scenario start year: %d\n", common_start_year))
+}
+
 #------------------------------------------------------------------------------
 # Load ERA5 historical observations
 #------------------------------------------------------------------------------
