@@ -93,10 +93,29 @@ cat(sprintf("  Temperature range: %.1f°C to %.1f°C\n",
 
 cat("\nStep 2: Loading projected temperature data...\n")
 
-proj_data <- open_dataset("data/tmeanproj.gz.parquet") %>%
+rcp85_paths <- c(
+  "data/tmeanproj_rcp85.gz.parquet",
+  "cordex_data/processed/tmeanproj_rcp85.gz.parquet"
+)
+rcp85_path <- rcp85_paths[file.exists(rcp85_paths)][1]
+
+proj_data_base <- open_dataset("data/tmeanproj.gz.parquet") %>%
   filter(URAU_CODE == city_code) %>%
   collect() %>%
   as.data.table()
+
+if (is.na(rcp85_path) || rcp85_path == "") {
+  proj_data <- proj_data_base
+} else {
+  cat(sprintf("Found RCP8.5 parquet: %s\n", rcp85_path))
+  proj_data_rcp85 <- open_dataset(rcp85_path) %>%
+    filter(URAU_CODE == city_code) %>%
+    collect() %>%
+    as.data.table()
+  proj_data <- rbindlist(list(proj_data_base, proj_data_rcp85), fill = TRUE)
+}
+
+proj_data[, ssp := as.character(ssp)]
 
 proj_data[, year := year(date)]
 
