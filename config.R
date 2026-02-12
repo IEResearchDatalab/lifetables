@@ -43,8 +43,8 @@ varper    <- c(10, 75, 90)
 gcmexcl <- c("CMCC_CM2_SR5", "TaiESM1")
 
 # ---- RCP / SSP scenarios ----
-ssp_codes  <- c("1", "2", "3")
-rcp_labels <- c("1" = "RCP 2.6", "2" = "RCP 4.5", "3" = "RCP 7.0")
+ssp_codes  <- c("1", "2", "3", "5")
+rcp_labels <- c("1" = "RCP 2.6", "2" = "RCP 4.5", "3" = "RCP 7.0", "5" = "RCP 8.5")
 
 # ---- Adaptation scenarios (heat-risk attenuation by 2100) ----
 adaptation_levels <- c(0, 0.50, 0.90)
