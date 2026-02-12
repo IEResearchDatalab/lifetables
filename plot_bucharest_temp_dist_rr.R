@@ -56,7 +56,7 @@ theme_ie <- function(base_size = 12) {
 #------------------------------------------------------------------------------
 source("config.R")
 
-ssp_scenario <- 2      # SSP2-4.5 (RCP4.5 equivalent)
+ssp_scenario <- 3      # SSP3 (RCP 7.0 equivalent) for future projections
 target_age <- "65-74"  # Age group for RR curve
 
 # Define periods
