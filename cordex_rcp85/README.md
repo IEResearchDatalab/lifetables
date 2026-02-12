@@ -5,13 +5,13 @@ This directory contains scripts to download and process EURO-CORDEX climate proj
 ## Directory Structure
 
 ```
-cordex_data/  # NOT COMMITTED — contains raw NetCDF files and processed CSV outputs
+cordex_data/  # NOT COMMITTED — contains raw NetCDF files and processed parquet outputs
 ├── raw/                          # Downloaded NetCDF files (not in git)
 ├── processed/                    # Processed CSV output (not in git)
 ├── logs/                         # Processing logs
 ├── esgf_credentials.sh          # ESGF login credentials (DO NOT COMMIT)
 cordex_rcp85/
-├── process_to_csv.R             # Main processing script
+├── process_to_parquet.R         # Main processing script
 ├── run_processing.sh            # Processing wrapper
 └── README.md                    # This file
 ```
@@ -62,7 +62,7 @@ cordex_rcp85/
 - **Period**: 2006-2100
 - **Size**: ~50-100 GB
 
-## Step 2: Process to City-Level CSV
+## Step 2: Process to City-Level Parquet
 
 ### Prerequisites
 - R (≥ 4.0)
@@ -87,22 +87,32 @@ The script will:
 3. Extract temperature for each city (nearest grid point)
 4. Convert Kelvin → Celsius
 5. Reshape to wide format (one column per model)
-6. Output to `cordex_data/processed/city_daily_temperature.csv`
+6. Output to `cordex_data/processed/tmeanproj_rcp85.gz.parquet`
 
 ### Output Format
 
-```csv
-city,date,MODEL1_RCM1_r1i1p1,MODEL2_RCM2_r1i1p1,...
-Amsterdam,2006-01-01,2.3,2.5,...
-Amsterdam,2006-01-02,3.1,3.2,...
-Athens,2006-01-01,12.4,12.7,...
-...
-```
+The output is a parquet file compatible with `data/tmeanproj.gz.parquet` and the
+plotting scripts in this repo.
 
 **Columns:**
-- `city`: City name
+- `URAU_CODE`: City code (e.g., RO001C)
 - `date`: Date (YYYY-MM-DD)
-- One column per GCM-RCM combination (temperature in °C)
+- `ssp`: Scenario code (`4` for RCP8.5)
+- One column per GCM-RCM combination, prefixed with `tas_` (temperature in C)
+
+### Why Parquet
+
+- Faster reads and smaller files for multi-model daily data.
+- Columnar format lets `arrow::open_dataset()` scan only needed columns.
+- Matches the schema expected by `plot_bucharest_*` and other scripts.
+
+```text
+URAU_CODE,date,ssp,tas_MODEL1_RCM1_r1i1p1,tas_MODEL2_RCM2_r1i1p1,...
+RO001C,2006-01-01,4,2.3,2.5,...
+RO001C,2006-01-02,4,3.1,3.2,...
+GR001C,2006-01-01,4,12.4,12.7,...
+...
+```
 
 ### Cities Included
 
@@ -167,22 +177,22 @@ R
 
 ### Process Subset of Cities
 
-Edit `cordex_rcp85/process_to_csv.R`, modify the `cities` data.table to include only desired cities.
+Edit `cordex_rcp85/process_to_parquet.R`, modify the `cities` data.table to include only desired cities.
 
 ### Change Output Format
 
 To get long format instead of wide:
 ```R
-# In process_to_csv.R, replace the dcast line with:
+# In process_to_parquet.R, replace the dcast line with:
 # Skip the reshape, output combined_data directly
-fwrite(combined_data, output_path)
+write_parquet(combined_data, output_path, compression = "gzip")
 ```
 
 ### Extract Specific Time Period
 
 Add filtering before writing output:
 ```R
-# In process_to_csv.R, before fwrite:
+# In process_to_parquet.R, before write_parquet:
 wide_data <- wide_data[date >= as.Date("2020-01-01") & date <= as.Date("2050-12-31")]
 ```
 

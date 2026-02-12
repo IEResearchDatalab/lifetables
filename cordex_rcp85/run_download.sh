@@ -4,7 +4,7 @@
 set -e
 
 # Load credentials
-CRED_FILE="$(dirname "$0")/esgf_credentials.sh"
+CRED_FILE="$(dirname "$0")/cordex_data/esgf_credentials.sh"
 if [ ! -f "$CRED_FILE" ]; then
     echo "Error: Credentials file not found: $CRED_FILE"
     echo "Please edit $CRED_FILE with your ESGF credentials"
@@ -28,7 +28,7 @@ if [[ "$ESGF_OPENID" == *"YOUR_USERNAME"* ]] || [[ "$ESGF_USERNAME" == "YOUR_USE
 fi
 
 # Create directory for data if it doesn't exist
-cd "$(dirname "$0")/raw"
+cd "$(dirname "$0")/cordex_data/raw"
 
 echo "=========================================="
 echo "CORDEX Data Download"
@@ -41,7 +41,7 @@ echo ""
 
 # Run the wget script with HTTP authentication
 # Pipe password non-interactively
-echo "$ESGF_PASSWORD" | bash ../../wget-20260210190800.sh -H -o "$ESGF_OPENID" -I "$ESGF_USERNAME"
+echo "$ESGF_PASSWORD" | bash ../../cordex_rcp85/wget-20260210190800.sh -H -o "$ESGF_OPENID" -I "$ESGF_USERNAME"
 
 exit_code=$?
 
