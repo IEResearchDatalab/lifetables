@@ -56,13 +56,15 @@ window_size <- 365     # Rolling average window (days)
 ssp_colors <- c(
   "RCP2.6" = TechGreen,
   "RCP4.5" = SeaBlue,
-  "RCP7.0" = "#D32F2F"
+  "RCP7.0" = "#D32F2F",
+  "RCP8.5" = "#F57C00"
 )
 
 ssp_labels <- c(
   "1" = "RCP2.6",
-  "2" = "RCP4.5", 
-  "3" = "RCP7.0"
+  "2" = "RCP4.5",
+  "3" = "RCP7.0",
+  "5" = "RCP8.5"
 )
 
 cat("=== Temperature Evolution Analysis ===\n")
@@ -75,11 +77,30 @@ cat(sprintf("Rolling window: %d days\n", window_size))
 
 cat("\nLoading raw temperature data...\n")
 
+rcp85_paths <- c(
+  "data/tmeanproj_rcp85.gz.parquet",
+  "cordex_data/processed/tmeanproj_rcp85.gz.parquet"
+)
+rcp85_path <- rcp85_paths[file.exists(rcp85_paths)][1]
+
 # Read parquet file - GCMs are in separate columns
-temp_raw <- open_dataset("data/tmeanproj.gz.parquet") |>
+temp_raw_base <- open_dataset("data/tmeanproj.gz.parquet") |>
   filter(URAU_CODE == city_code) |>
   collect() |>
   as.data.table()
+
+if (is.na(rcp85_path) || rcp85_path == "") {
+  temp_raw <- temp_raw_base
+} else {
+  cat(sprintf("Found RCP8.5 parquet: %s\n", rcp85_path))
+  temp_raw_rcp85 <- open_dataset(rcp85_path) |>
+    filter(URAU_CODE == city_code) |>
+    collect() |>
+    as.data.table()
+  temp_raw <- rbindlist(list(temp_raw_base, temp_raw_rcp85), fill = TRUE)
+}
+
+temp_raw[, ssp := as.character(ssp)]
 
 cat(sprintf("Loaded %s observations\n", format(nrow(temp_raw), big.mark = ",")))
 
@@ -141,10 +162,12 @@ era5_plot <- era5[!is.na(roll_mean), .(
 
 ssp_results <- list()
 
-for (ssp_num in c(1, 2, 3)) {
-  cat(sprintf("  Processing SSP%d...\n", ssp_num))
+ssp_ids <- intersect(names(ssp_labels), unique(temp_long$ssp))
+
+for (ssp_id in ssp_ids) {
+  cat(sprintf("  Processing SSP%s...\n", ssp_id))
   
-  ssp_data <- temp_long[ssp == ssp_num]
+  ssp_data <- temp_long[ssp == ssp_id]
   
   # Calculate daily statistics across GCMs
   daily_stats <- ssp_data[, .(
@@ -168,14 +191,14 @@ for (ssp_num in c(1, 2, 3)) {
     roll_q95 = frollmean(q95, n = window_size, align = "center", na.rm = TRUE)
   )]
   
-  ssp_results[[ssp_labels[as.character(ssp_num)]]] <- daily_stats[!is.na(roll_mean), .(
+  ssp_results[[ssp_labels[ssp_id]]] <- daily_stats[!is.na(roll_mean), .(
     date = date,
     mean = roll_mean,
     q05 = roll_q05,
     q25 = roll_q25,
     q75 = roll_q75,
     q95 = roll_q95,
-    scenario = ssp_labels[as.character(ssp_num)]
+    scenario = ssp_labels[ssp_id]
   )]
 }
 
@@ -201,15 +224,14 @@ plot_data <- rbind(
 )
 
 # Set scenario factor levels for legend order
-plot_data[, scenario := factor(scenario, levels = c("ERA5 (Historical)", "RCP2.6", "RCP4.5", "RCP7.0"))]
-ssp_combined[, scenario := factor(scenario, levels = c("RCP2.6", "RCP4.5", "RCP7.0"))]
+available_labels <- unname(ssp_labels[ssp_ids])
+plot_data[, scenario := factor(scenario, levels = c("ERA5 (Historical)", available_labels))]
+ssp_combined[, scenario := factor(scenario, levels = available_labels)]
 
 # Color palette including historical
 all_colors <- c(
   "ERA5 (Historical)" = OceanBlue,
-  "RCP2.6" = TechGreen,
-  "RCP4.5" = SeaBlue,
-  "RCP7.0" = "#D32F2F"
+  ssp_colors
 )
 
 # Create the plot
@@ -228,7 +250,7 @@ p_evolution <- ggplot() +
             linewidth = 1) +
   # Scales
   scale_color_manual(values = all_colors, name = "Scenario",
-                     breaks = c("ERA5 (Historical)", "RCP2.6", "RCP4.5", "RCP7.0")) +
+                     breaks = c("ERA5 (Historical)", available_labels)) +
   scale_x_date(date_breaks = "10 years", date_labels = "%Y",
                expand = c(0.01, 0)) +
   scale_y_continuous(name = "Temperature (°C)") +

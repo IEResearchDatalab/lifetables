@@ -76,10 +76,29 @@ cat(sprintf("Scenario: SSP%d\n", ssp_scenario))
 
 cat("\nLoading raw temperature data...\n")
 
-raw_data <- open_dataset("data/tmeanproj.gz.parquet") |>
+rcp85_paths <- c(
+  "data/tmeanproj_rcp85.gz.parquet",
+  "cordex_data/processed/tmeanproj_rcp85.gz.parquet"
+)
+rcp85_path <- rcp85_paths[file.exists(rcp85_paths)][1]
+
+raw_data_base <- open_dataset("data/tmeanproj.gz.parquet") |>
   filter(URAU_CODE == city_code) |>
   collect() |>
   as.data.table()
+
+if (is.na(rcp85_path) || rcp85_path == "") {
+  raw_data <- raw_data_base
+} else {
+  cat(sprintf("Found RCP8.5 parquet: %s\n", rcp85_path))
+  raw_data_rcp85 <- open_dataset(rcp85_path) |>
+    filter(URAU_CODE == city_code) |>
+    collect() |>
+    as.data.table()
+  raw_data <- rbindlist(list(raw_data_base, raw_data_rcp85), fill = TRUE)
+}
+
+raw_data[, ssp := as.character(ssp)]
 
 raw_data <- raw_data[ssp %in% c("hist", as.character(ssp_scenario))]
 
