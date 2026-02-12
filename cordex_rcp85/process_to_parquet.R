@@ -187,7 +187,6 @@ extract_city_temperature <- function(nc_file, cities_dt) {
 }
 
 
-ç
 # Process all files by model --------------------------------------------------
 cat("\n=== Starting data extraction ===\n\n")
 
