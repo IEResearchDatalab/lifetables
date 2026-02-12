@@ -18,6 +18,16 @@ Rscript compute_cohort_lifetable_financial.R   # Table 5 — financial impact (E
 
 All outputs land in `img/` (figures) and `results_csv/` (tables). The LaTeX table is written to `<city>_lifetable_2023.tex` in the project root.
 
+### Required Data
+
+The following additional files must be located inside the root folder. These files do not come directly from the Zenodo repository and must be downloaded separately.
+
+- `cordex_data/` - CORDEX EUR-11 RCP8.5 projections. Download and process with `cordex_rcp85/` scripts. You will find a README in that folder with instructions.
+- `data/2023_temp/` - ERA5 daily mean temperature for 2023. Download with `data/2023_temp/download_era5_2023.py`.
+- `data/POP106A.csv` and `data/POP206K.csv` - ToDo.
+- `data/2.62.csv` and `data/2.63.csv` - ToDo.
+
+
 ---
 
 ## Generating for a Different City
