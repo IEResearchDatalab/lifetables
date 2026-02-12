@@ -19,7 +19,7 @@ RAW_DATA_DIR <- file.path(script_dir, "raw")
 OUTPUT_DIR <- file.path(script_dir, "processed")
 OUTPUT_FILE <- "tmeanproj_rcp85.gz.parquet"
 SCENARIO_FILTER <- "rcp85"
-SCENARIO_CODE <- "4"
+SCENARIO_CODE <- "5"
 
 # Ensure output directory exists
 if (!dir.exists(OUTPUT_DIR)) {
@@ -186,6 +186,8 @@ extract_city_temperature <- function(nc_file, cities_dt) {
   })
 }
 
+
+ç
 # Process all files by model --------------------------------------------------
 cat("\n=== Starting data extraction ===\n\n")
 
