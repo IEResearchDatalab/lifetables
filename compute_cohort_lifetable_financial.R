@@ -829,7 +829,20 @@ header_rcp <- paste(c("", "", "\\textbf{RCP}", "", "", ""), collapse = " & ")
 header_cols <- paste(c("\\textbf{Quantity (\\%)}", "\\textbf{Adaptation}",
                        sprintf("\\textbf{%s}", rcp_header)), collapse = " & ")
 
+# Descriptive header inserted above the table for clarity in LaTeX output.
+# This text summarizes the cohort and annuity/insurance timing using config values.
+annuity_year_start <- cohort_start_year + (annuity_age_start - cohort_start_age)
+annuity_year_end <- cohort_start_year + (annuity_age_end - cohort_start_age)
+desc_text <- sprintf(
+  "This analysis follows a cohort of %s individuals aged %d in %d through %d. Annuities and life insurance are purchased at cohort inception (age %d, year %d). Annuity payments occur from age %d (year %d) to age %d (year %d).",
+  format(radix, big.mark = ","), cohort_start_age, cohort_start_year, cohort_end_year,
+  cohort_start_age, cohort_start_year,
+  annuity_age_start, annuity_year_start, annuity_age_end, annuity_year_end
+)
+
 tex_lines <- c(
+  sprintf("\\label{%s}", desc_text),
+  "\\vspace{2mm}",
   "\\begin{tabular}{llrrrr}",
   "\\toprule",
   paste0(header_rcp, " ", intToUtf8(92), intToUtf8(92)),
