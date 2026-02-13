@@ -202,9 +202,15 @@ names(mmt_vec) <- agelabs
 # Step 6: Interpolate RR to Single-Year Ages
 #------------------------------------------------------------------------------
 
-cat("\nStep 6: Interpolating RR to single-year ages (20-100)...\n")
+cat("\nStep 6: Interpolating RR to single-year ages...\n")
 
-age_range <- 20:100
+# Ensure cohort_years exists (defined later in the script) and determine
+# single-year age range to interpolate RR over. This covers the RR model
+# support (20-100) and the cohort years defined in config.
+if (!exists("cohort_years")) cohort_years <- cohort_start_year:cohort_end_year
+age_min <- min(20, cohort_start_age)
+age_max <- max(100, cohort_start_age + length(cohort_years) - 1)
+age_range <- age_min:age_max
 
 # For each temperature, interpolate RR across ages
 rr_single_age <- matrix(NA, nrow = n_temp, ncol = length(age_range))
@@ -224,7 +230,7 @@ mmt_single_age <- approx(x = age_midpoints, y = mmt_vec,
                          xout = age_range, rule = 2)$y
 names(mmt_single_age) <- age_range
 
-cat(sprintf("  Interpolated to %d single-year ages (20-100)\n", length(age_range)))
+cat(sprintf("  Interpolated to %d single-year ages (%d-%d)\n", length(age_range), age_min, age_max))
 
 #------------------------------------------------------------------------------
 # Step 7: Fast Function to Compute Daily-Step Average RR with Adaptation
@@ -288,8 +294,8 @@ cat("\nStep 9: Validation check...\n")
 # Since we use 2023 as reference, multiplier at 2023 = RR_2023 / RR_2023 = 1.0
 multiplier_2023 <- rr_2023_by_age / rr_2023_by_age  # All equal to 1
 
-cat(sprintf("  Multiplier at age 20, year 2023: %.6f (should be exactly 1.0)\n", 
-            multiplier_2023["20"]))
+cat(sprintf("  Multiplier at age %d, year 2023: %.6f (should be exactly 1.0)\n", 
+            cohort_start_age, multiplier_2023[as.character(cohort_start_age)]))
 
 #------------------------------------------------------------------------------
 # Step 10: Load Eurostat Projected Mortality Data
@@ -301,7 +307,7 @@ cat("\nStep 10: Loading Eurostat projected mortality data...\n")
 # This provides year-specific qx with built-in mortality improvement assumptions
 mort_proj <- fread(sprintf("data/%s_mortality_projections.csv", city_name_lower))
 
-# Filter for ages 20+ (cohort starts at age 20)
+# Filter for ages >= cohort start (cohort starts at age defined in config)
 mort_proj <- mort_proj[age >= 20]
 
 # Ensure we have the cohort years
@@ -311,12 +317,12 @@ cat(sprintf("  Loaded Eurostat projections: %d records\n", nrow(mort_proj)))
 cat(sprintf("  Age range: %d to %d\n", min(mort_proj$age), max(mort_proj$age)))
 cat(sprintf("  Year range: %d to %d\n", min(mort_proj$year), max(mort_proj$year)))
 
-# Verify coverage for our cohort (age 20 in 2023 -> age 96 in 2099)
-cohort_check <- mort_proj[year == 2023 & age == 20]
+# Verify coverage for our cohort (cohort start age in 2023 -> final age in cohort_end_year)
+cohort_check <- mort_proj[year == 2023 & age == cohort_start_age]
 if (nrow(cohort_check) == 0) {
-  stop("Missing 2023 data for age 20 in mortality projections!")
+  stop(sprintf("Missing 2023 data for age %d in mortality projections!", cohort_start_age))
 }
-cat(sprintf("  Cohort start qx (age 20, 2023): %.6f\n", cohort_check$qx[1]))
+cat(sprintf("  Cohort start qx (age %d, 2023): %.6f\n", cohort_start_age, cohort_check$qx[1]))
 
 # Create baseline lookup table (for compatibility with existing code)
 # This is used for the reference period normalization
@@ -497,8 +503,8 @@ cat(sprintf("  Built %d cohort life tables\n", length(lifetables)))
 cat("\nStep 13: Calculating actuarial quantities...\n")
 
 # Function to compute EPV of deferred term annuity-due
-# Purchased at age 20, payments from age 65 to 84 (20 years)
-# Formula: _{45|20}ä_x = sum_{k=45}^{64} v^k * k_p_x
+# Purchased at cohort start age, payments from `annuity_age_start` to `annuity_age_end`
+# Formula: _{d|x}ä_x = sum_{k=d}^{d+term-1} v^k * k_p_x where d = annuity_age_start - cohort_start_age
 compute_annuity_epv <- function(
   lt,
   qx_col = "qx_base",
@@ -677,21 +683,21 @@ temp_dist_2023 <- temp_2023[, .(n_days = .N), by = .(temp_bin = round(tmean))]
 temp_dist_2023 <- temp_dist_2023[order(temp_bin)]
 temp_dist_2023[, proportion := n_days / sum(n_days)]
 
-# Validation: Multiplier at age 20, year 2023 should be exactly 1
+# Validation: Multiplier at cohort start age, year 2023 should be exactly 1
 validation_summary <- data.table(
   metric = c("Mean temperature 2023", 
              "Min temperature 2023", 
              "Max temperature 2023",
              "Number of days 2023",
-             "Multiplier at age 20, 2023",
-             "Reference RR at age 20 (2023)",
+             sprintf("Multiplier at age %d, 2023", cohort_start_age),
+             sprintf("Reference RR at age %d (2023)", cohort_start_age),
              "Interest rate used"),
   value = c(mean(temp_2023$tmean),
             min(temp_2023$tmean),
             max(temp_2023$tmean),
             nrow(temp_2023),
-            multiplier_2023["20"],
-            rr_2023_by_age["20"],
+            multiplier_2023[as.character(cohort_start_age)],
+            rr_2023_by_age[as.character(cohort_start_age)],
             interest_rate)
 )
 
@@ -721,7 +727,7 @@ cat(sprintf("  Saved: results_csv/%s_validation_summary.csv\n", city_name_lower)
 
 # Save multipliers for reference
 fwrite(multipliers, sprintf("results_csv/%s_mortality_multipliers_cohort.csv", city_name_lower))
-cat("  Saved: results_csv/bucharest_mortality_multipliers_cohort.csv\n")
+cat(sprintf("  Saved: results_csv/%s_mortality_multipliers_cohort.csv\n", city_name_lower))
 
 #------------------------------------------------------------------------------
 # Step 17: Print Summary Report
@@ -744,18 +750,21 @@ cat("  Source: Eurostat EUROPOP2019 Regional Projections (proj_19raasmr3 + proj_
 cat("  Region: București (Bucharest) - NUTS 3\n")
 cat("  Years: 2019-2100 (with built-in mortality improvement assumptions)\n")
 cat("  Sex: Population-weighted combination of male and female\n")
-cat(sprintf("  Baseline qx at age 20, 2023: %.6f\n", mort_proj[year == 2023 & age == 20, qx]))
+cat(sprintf("  Baseline qx at age %d, 2023: %.6f\n", cohort_start_age, mort_proj[year == 2023 & age == cohort_start_age, qx]))
 cat(sprintf("  Baseline qx at age 60, 2023: %.6f\n", mort_proj[year == 2023 & age == 60, qx]))
 cat(sprintf("  Baseline qx at age 60, 2050: %.6f (%.1f%% improvement)\n", 
             mort_proj[year == 2050 & age == 60, qx],
             (1 - mort_proj[year == 2050 & age == 60, qx] / mort_proj[year == 2023 & age == 60, qx]) * 100))
 
 cat("\n--- Validation ---\n")
-cat(sprintf("  Climate mortality multiplier at age 20, 2023: %.6f\n", multiplier_2023["20"]))
+cat(sprintf("  Climate mortality multiplier at age %d, 2023: %.6f\n", cohort_start_age, multiplier_2023[as.character(cohort_start_age)]))
 cat("  (Should be 1.0 for proper normalization - climate effect relative to 2023 baseline)\n")
 
 cat("\n--- Financial Impact Summary (% Change vs Baseline) ---\n")
-cat("\nDeferred Term Annuity-Due (45|20 äx, payments ages 65-84):\n")
+  # Describe annuity dynamically using configuration values
+  deferral_years <- annuity_age_start - cohort_start_age
+  payment_label <- sprintf("payments ages %d-%d", annuity_age_start, annuity_age_end)
+  cat(sprintf("\nDeferred Term Annuity-Due (defer %d years, %s):\n", deferral_years, payment_label))
 for (i in 1:nrow(epv_summary)) {
   cat(sprintf("  %s, Adaptation %s: %+.3f%%\n", 
               epv_summary$rcp[i], epv_summary$adaptation[i], 
@@ -771,39 +780,25 @@ for (i in 1:nrow(epv_summary)) {
 
 # Create summary table for LaTeX
 cat("\n--- Summary Table for LaTeX (Table format) ---\n")
-cat("\nAdaptation = 0% (No Adaptation):\n")
-summary_0 <- epv_summary[adaptation == "0%", 
-                          .(rcp, 
-                            annuity_pct = sprintf("%+.2f", pct_delta_annuity),
-                            insurance_pct = sprintf("%+.2f", pct_delta_insurance),
-                            reserve_annuity_pct = sprintf("%+.2f", pct_delta_reserve_annuity),
-                            reserve_ins_pct = sprintf("%+.2f", pct_delta_reserve_ins))]
-print(summary_0)
-
-cat("\nAdaptation = 50%:\n")
-summary_50 <- epv_summary[adaptation == "50%", 
-                           .(rcp, 
-                             annuity_pct = sprintf("%+.2f", pct_delta_annuity),
-                             insurance_pct = sprintf("%+.2f", pct_delta_insurance),
-                             reserve_annuity_pct = sprintf("%+.2f", pct_delta_reserve_annuity),
-                             reserve_ins_pct = sprintf("%+.2f", pct_delta_reserve_ins))]
-print(summary_50)
-
-cat("\nAdaptation = 90%:\n")
-summary_90 <- epv_summary[adaptation == "90%", 
-                           .(rcp, 
-                             annuity_pct = sprintf("%+.2f", pct_delta_annuity),
-                             insurance_pct = sprintf("%+.2f", pct_delta_insurance),
-                             reserve_annuity_pct = sprintf("%+.2f", pct_delta_reserve_annuity),
-                             reserve_ins_pct = sprintf("%+.2f", pct_delta_reserve_ins))]
-print(summary_90)
+# Print summaries for the adaptation scenarios defined in config.R
+for (adapt_lab in adaptation_labels) {
+  cat(sprintf("\nAdaptation = %s:\n", adapt_lab))
+  summary_dt <- epv_summary[adaptation == adapt_lab,
+                            .(rcp,
+                              annuity_pct = sprintf("%+.2f", pct_delta_annuity),
+                              insurance_pct = sprintf("%+.2f", pct_delta_insurance),
+                              reserve_annuity_pct = sprintf("%+.2f", pct_delta_reserve_annuity),
+                              reserve_ins_pct = sprintf("%+.2f", pct_delta_reserve_ins))]
+  print(summary_dt)
+}
 
 cat("\n--- Writing LaTeX Summary Table ---\n")
 
-rcp_order <- c("RCP 2.6", "RCP 4.5", "RCP 7.0", "RCP 8.5")
-rcp_header <- c("2.6", "4.5", "7.0", "8.5")
-adapt_order <- c("0%", "50%", "90%")
-adapt_display <- c("0\\%", "50\\%", "90\\%")
+# Determine RCP display/order and adaptation display dynamically from config
+rcp_order <- as.character(rcp_labels[ssp_codes])
+rcp_header <- gsub("RCP[[:space:]]*", "", rcp_order)
+adapt_order <- adaptation_labels
+adapt_display <- gsub("%", "\\\\%", adapt_order)
 
 format_pct <- function(x) sprintf("%+.2f", x)
 latex_val <- function(x) sprintf("$%s$", format_pct(x))
