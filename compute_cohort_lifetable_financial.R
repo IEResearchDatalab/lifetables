@@ -515,7 +515,10 @@ compute_annuity_epv <- function(
   v <- discount_factor
   
   # Survival probabilities
-  px <- 1 - lt[[qx_col]]
+  qx <- lt[[qx_col]]
+  # Treat missing qx as certain death at that age
+  qx[is.na(qx)] <- 1
+  px <- 1 - qx
   
   # k-year survival probability from age x (starting age 20)
   kpx <- cumprod(c(1, px[-n]))  # kpx[k+1] = k_p_x
@@ -543,6 +546,8 @@ compute_insurance_epv <- function(lt, qx_col = "qx_base") {
   v <- discount_factor
   
   qx <- lt[[qx_col]]
+  # Treat missing qx as certain death at that age
+  qx[is.na(qx)] <- 1
   px <- 1 - qx
   
   # k-year survival probability from age x
