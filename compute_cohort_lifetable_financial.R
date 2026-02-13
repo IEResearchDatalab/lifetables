@@ -841,7 +841,7 @@ desc_text <- sprintf(
 )
 
 tex_lines <- c(
-  sprintf("\\label{%s}", desc_text),
+  sprintf("\\caption{%s}", desc_text),
   "\\vspace{2mm}",
   "\\begin{tabular}{llrrrr}",
   "\\toprule",
@@ -855,9 +855,66 @@ tex_lines <- c(
   "\\end{tabular}"
 )
 
-tex_file <- sprintf("img/%s_financial_impact_summary.tex", city_name_lower)
-writeLines(tex_lines, tex_file)
-cat(sprintf("  Saved: %s\n", tex_file))
+# Save percentages table (user-visible summary)
+tex_file_pct <- sprintf("img/%s_financial_impact_percetanges.tex", city_name_lower)
+writeLines(tex_lines, tex_file_pct)
+cat(sprintf("  Saved: %s\n", tex_file_pct))
+
+# Also save CSV of percentages
+perc_csv <- sprintf("results_csv/%s_financial_impact_percetanges.csv", city_name_lower)
+fwrite(epv_summary[, .(rcp, adaptation, pct_delta_annuity, pct_delta_insurance, pct_delta_reserve_annuity, pct_delta_reserve_ins)], perc_csv)
+cat(sprintf("  Saved: %s\n", perc_csv))
+
+# Build amounts table: include baseline (no climate) column and climate amounts per RCP
+build_rows_amounts <- function(quantity_label, base_col, clim_col) {
+  rows <- character(0)
+  for (i in seq_along(adapt_order)) {
+    adapt <- adapt_order[i]
+    adapt_label <- adapt_display[i]
+    row_vals <- vapply(rcp_order, function(rcp_val) {
+      val <- epv_summary[rcp == rcp_val & adaptation == adapt, get(clim_col)]
+      val <- val[1]
+      if (length(val) == 0 || is.na(val)) "NA" else sprintf("%0.3f", val)
+    }, character(1))
+
+    # baseline (no climate) - take first matching baseline value for this adaptation
+    base_val <- epv_summary[adaptation == adapt, get(base_col)]
+    base_val <- base_val[1]
+    base_text <- if (length(base_val) == 0 || is.na(base_val)) "NA" else sprintf("%0.3f", base_val)
+
+    label <- if (i == 1) quantity_label else ""
+    row_text <- paste(c(label, adapt_label, base_text, row_vals), collapse = " & ")
+    rows <- c(rows, paste0(row_text, " ", intToUtf8(92), intToUtf8(92)))
+  }
+  rows
+}
+
+# Amounts table header
+header_amounts <- paste(c("", "", "\\textbf{Base}", sprintf("\\textbf{%s}", rcp_header)), collapse = " & ")
+
+tex_lines_amt <- c(
+  sprintf("\\caption{%s}", desc_text),
+  "\\vspace{2mm}",
+  "\\begin{tabular}{llrllll}",
+  "\\toprule",
+  paste0(header_rcp, " ", intToUtf8(92), intToUtf8(92)),
+  paste0(header_amounts, " ", intToUtf8(92), intToUtf8(92)),
+  "\\midrule",
+  build_rows_amounts("Annuity EPV", "annuity_base", "annuity_clim"),
+  "\\midrule",
+  build_rows_amounts("Life insurance EPV", "insurance_base", "insurance_clim"),
+  "\\bottomrule",
+  "\\end{tabular}"
+)
+
+# Save amounts LaTeX and CSV
+tex_file_amt <- sprintf("img/%s_financial_impact_amounts.tex", city_name_lower)
+writeLines(tex_lines_amt, tex_file_amt)
+cat(sprintf("  Saved: %s\n", tex_file_amt))
+
+amt_csv <- sprintf("results_csv/%s_financial_impact_amounts.csv", city_name_lower)
+fwrite(epv_summary[, .(rcp, adaptation, annuity_base, annuity_clim, insurance_base, insurance_clim, reserve_annuity_base, reserve_annuity_clim, reserve_ins_base, reserve_ins_clim, reserve_total_base, reserve_total_clim)], amt_csv)
+cat(sprintf("  Saved: %s\n", amt_csv))
 
 cat("\n" %+% Rep("=", 70) %+% "\n")
 cat("DONE!\n")
