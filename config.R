@@ -21,9 +21,15 @@ nuts3_code <- "RO321"        # NUTS 3 code (Eurostat projections)
 img_dir <- "img"
 
 # ---- Cohort parameters ----
-cohort_start_age  <- 20      # Starting age of the cohort
+cohort_start_age  <- 40      # Starting age of the cohort
 cohort_start_year <- 2023    # Calendar year at cohort start
 cohort_end_year   <- 2099    # Calendar year at cohort end
+
+# ---- Insurance and annuity parameters ----
+# The purchase of both life insurance and annuities
+# is assumed to occur at the cohort start age and year.
+annuity_age_start <- 65      # Age at which annuity payments start
+annuity_age_end   <- 84      # Age at which annuity payments end
 
 # ---- Interest rate for EPV calculations ----
 interest_rate   <- 0.02      # 2% annual discount rate
@@ -47,8 +53,8 @@ ssp_codes  <- c("1", "2", "3", "5")
 rcp_labels <- c("1" = "RCP 2.6", "2" = "RCP 4.5", "3" = "RCP 7.0", "5" = "RCP 8.5")
 
 # ---- Adaptation scenarios (heat-risk attenuation by 2100) ----
-adaptation_levels <- c(0, 0.50, 0.90)
-adaptation_labels <- c("0%", "50%", "90%")
+adaptation_levels <- c(0, 0.20, 0.50)
+adaptation_labels <- c("0%", "20%", "50%")
 
 # ---- Adaptation time parameters ----
 t0_adapt <- 2020
