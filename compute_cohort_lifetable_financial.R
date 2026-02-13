@@ -499,7 +499,12 @@ cat("\nStep 13: Calculating actuarial quantities...\n")
 # Function to compute EPV of deferred term annuity-due
 # Purchased at age 20, payments from age 65 to 84 (20 years)
 # Formula: _{45|20}ä_x = sum_{k=45}^{64} v^k * k_p_x
-compute_annuity_epv <- function(lt, qx_col = "qx_base") {
+compute_annuity_epv <- function(
+  lt,
+  qx_col = "qx_base",
+  age_purchase = 20,
+  age_start = 65,
+  age_end = 84) {
   n <- nrow(lt)
   v <- discount_factor
   
@@ -511,12 +516,9 @@ compute_annuity_epv <- function(lt, qx_col = "qx_base") {
   
   # Deferral: 45 years (until age 65)
   # Term: 20 years (payments at ages 65, 66, ..., 84)
-  # k ranges from 45 to 64 (R indices 46 to 65)
-  defer <- 45  # years until first payment
-  term <- 20   # number of payments
-  
-  k_start <- defer      # first payment at k=45 (age 65)
-  k_end <- defer + term - 1  # last payment at k=64 (age 84)
+  # k ranges from 45 to 64 (R indices 46 to 65)  
+  k_start <- age_start - age_purchase      # first payment at k=45 (age 65)
+  k_end <- age_end - age_purchase  # last payment at k=64 (age 84)
   
   # Ensure we don't exceed available data
   k_end <- min(k_end, n - 1)
@@ -558,11 +560,23 @@ for (key in names(lifetables)) {
   adapt_lab <- lt$adaptation[1]
   
   # Baseline EPVs
-  annuity_base <- compute_annuity_epv(lt, "qx_base")
+  annuity_base <- compute_annuity_epv(
+    lt,
+    "qx_base",
+    age_purchase = cohort_start_age,
+    age_start = annuity_age_start,
+    age_end = annuity_age_end
+  )
   insurance_base <- compute_insurance_epv(lt, "qx_base")
   
   # Climate-adjusted EPVs
-  annuity_clim <- compute_annuity_epv(lt, "qx_clim")
+  annuity_clim <- compute_annuity_epv(
+    lt,
+    "qx_clim",
+    age_purchase = cohort_start_age,
+    age_start = annuity_age_start,
+    age_end = annuity_age_end
+  )
   insurance_clim <- compute_insurance_epv(lt, "qx_clim")
   
   # Compute changes
