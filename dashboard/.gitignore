@@ -1,0 +1,4 @@
+# Dashboard deployment .gitignore
+# The filtered parquet is too large for git (233 MB).
+# Regenerate it with: Rscript prep_deploy_data.R
+data/tmeanproj.gz.parquet

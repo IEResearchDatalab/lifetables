@@ -78,12 +78,32 @@ proj_data <- open_dataset("data/tmeanproj.gz.parquet") %>%
   as.data.table()
 
 proj_data[, year := year(date)]
+proj_data[, doy := as.integer(format(date, "%j"))]
+proj_data[doy > 365, doy := 365L]  # cap leap-year day 366
 
 gcm_cols <- names(proj_data)[grepl("^tas_", names(proj_data))]
 gcm_cols <- gcm_cols[!gsub("tas_", "", gcm_cols) %in% gcmexcl]
 
 cat(sprintf("  Loaded %d rows of projection data\n", nrow(proj_data)))
 cat(sprintf("  Using %d GCMs\n", length(gcm_cols)))
+
+# --- Load seasonal mortality weights ---
+seasonal_weights_file <- "results_csv/bucharest_seasonal_weights_daily.csv"
+if (file.exists(seasonal_weights_file)) {
+  sw_dt <- fread(seasonal_weights_file)
+  # Build lookup matrix: rows = ages 20..100 (81), cols = doy 1..365
+  sw_matrix <- matrix(1 / 365, nrow = 81, ncol = 365,
+                      dimnames = list(20:100, 1:365))
+  for (i in seq_len(nrow(sw_dt))) {
+    a <- sw_dt$age[i]; d <- sw_dt$doy[i]
+    sw_matrix[as.character(a), d] <- sw_dt$weight[i]
+  }
+  use_seasonal_weights <- TRUE
+  cat("  Loaded seasonal mortality weights (age × DOY)\n")
+} else {
+  use_seasonal_weights <- FALSE
+  cat("  Seasonal weights not found — using uniform weighting\n")
+}
 
 #------------------------------------------------------------------------------
 # Step 3: Load RR Coefficients for Bucharest
@@ -205,8 +225,11 @@ apply_adaptation_vec <- function(rr_vec, temps, mmt, adapt_level) {
 
 # Fast vectorized function to compute daily-step average RR for all ages
 # component: "total" (default), "heat" (days > MMT only), or "cold" (days <= MMT only)
+# doys: optional integer vector of day-of-year (1-365) paralleling temps,
+#       used for seasonal mortality weighting when use_seasonal_weights = TRUE.
 compute_daily_avg_rr_all_ages <- function(temps, mmt_vec, adapt_level = 0,
-                                          component = rr_component) {
+                                          component = rr_component,
+                                          doys = NULL) {
   temps <- temps[!is.na(temps)]
   if (length(temps) == 0) return(rep(NA_real_, length(age_range)))
   
@@ -230,7 +253,13 @@ compute_daily_avg_rr_all_ages <- function(temps, mmt_vec, adapt_level = 0,
       rr_adapted[temps > mmt] <- 1
     }
     
-    avg_rr[j] <- mean(rr_adapted)
+    # Seasonal mortality weighting
+    if (use_seasonal_weights && !is.null(doys)) {
+      w <- sw_matrix[as.character(age_range[j]), doys]
+      avg_rr[j] <- weighted.mean(rr_adapted, w)
+    } else {
+      avg_rr[j] <- mean(rr_adapted)
+    }
   }
   
   return(avg_rr)
@@ -250,11 +279,19 @@ cat(sprintf("  RR component: %s\n", rr_component))
 baseline_hist <- proj_data[ssp == "hist" & year %in% baseline_temp_period]
 baseline_proj <- proj_data[ssp %in% ssp_codes & year %in% baseline_temp_period & year > 2014]
 
-# Pool all daily temperatures from all GCMs
+# Pool all daily temperatures from all GCMs (with matching DOYs)
 baseline_temps_hist <- unlist(baseline_hist[, ..gcm_cols], use.names = FALSE)
 baseline_temps_proj <- unlist(baseline_proj[, ..gcm_cols], use.names = FALSE)
 baseline_temps_all  <- c(baseline_temps_hist, baseline_temps_proj)
-baseline_temps_all  <- baseline_temps_all[!is.na(baseline_temps_all)]
+
+baseline_doys_hist <- rep(baseline_hist$doy, length(gcm_cols))
+baseline_doys_proj <- rep(baseline_proj$doy, length(gcm_cols))
+baseline_doys_all  <- c(baseline_doys_hist, baseline_doys_proj)
+
+# Remove NAs in parallel
+valid_bl <- !is.na(baseline_temps_all)
+baseline_temps_all <- baseline_temps_all[valid_bl]
+baseline_doys_all  <- baseline_doys_all[valid_bl]
 
 cat(sprintf("  Pooled %s daily temperature values for baseline\n",
             format(length(baseline_temps_all), big.mark = ",")))
@@ -263,7 +300,8 @@ cat(sprintf("  Baseline temperature range: %.1f°C to %.1f°C\n",
 cat(sprintf("  Baseline mean temperature: %.2f°C\n", mean(baseline_temps_all)))
 
 # Compute baseline RR by age using the climatological temperature distribution
-rr_baseline_by_age <- compute_daily_avg_rr_all_ages(baseline_temps_all, mmt_single_age, 0)
+rr_baseline_by_age <- compute_daily_avg_rr_all_ages(baseline_temps_all, mmt_single_age, 0,
+                                                     doys = baseline_doys_all)
 names(rr_baseline_by_age) <- age_range
 
 cat(sprintf("  Baseline reference RR range: %.4f to %.4f\n", 
@@ -350,12 +388,16 @@ for (ssp_val in ssp_codes) {
                         ifelse(yr >= tf_adapt, adapt_final,
                                adapt_final * (yr - t0_adapt) / (tf_adapt - t0_adapt)))
       
-      # Pool temperatures from all GCMs (vectorized)
+      # Pool temperatures from all GCMs (vectorized) with DOYs
       all_temps <- unlist(year_data[, ..gcm_cols], use.names = FALSE)
-      all_temps <- all_temps[!is.na(all_temps)]
+      all_doys  <- rep(year_data$doy, length(gcm_cols))
+      valid_yr  <- !is.na(all_temps)
+      all_temps <- all_temps[valid_yr]
+      all_doys  <- all_doys[valid_yr]
       
       # Compute multiplier for all ages at once (vectorized)
-      avg_rr_vec <- compute_daily_avg_rr_all_ages(all_temps, mmt_single_age, adapt_t)
+      avg_rr_vec <- compute_daily_avg_rr_all_ages(all_temps, mmt_single_age, adapt_t,
+                                                   doys = all_doys)
       multiplier_vec <- avg_rr_vec / rr_baseline_by_age
       
       # Store results for all ages
@@ -383,8 +425,15 @@ start_year_temps <- c(
   unlist(start_year_data_hist[, ..gcm_cols], use.names = FALSE),
   unlist(start_year_data_proj[, ..gcm_cols], use.names = FALSE)
 )
-start_year_temps <- start_year_temps[!is.na(start_year_temps)]
-rr_start_year <- compute_daily_avg_rr_all_ages(start_year_temps, mmt_single_age, 0)
+start_year_doys <- c(
+  rep(start_year_data_hist$doy, length(gcm_cols)),
+  rep(start_year_data_proj$doy, length(gcm_cols))
+)
+valid_sy <- !is.na(start_year_temps)
+start_year_temps <- start_year_temps[valid_sy]
+start_year_doys  <- start_year_doys[valid_sy]
+rr_start_year <- compute_daily_avg_rr_all_ages(start_year_temps, mmt_single_age, 0,
+                                                doys = start_year_doys)
 multiplier_start_year <- rr_start_year / rr_baseline_by_age
 names(multiplier_start_year) <- age_range
 
