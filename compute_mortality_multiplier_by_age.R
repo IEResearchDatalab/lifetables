@@ -399,15 +399,15 @@ ggsave(file.path(img_dir, sprintf("sample_multi_%s.png", city_name_lower)), p,
        width = 6, height = 4, dpi = 300, bg = "white")
 
 # Save PDF
-ggsave(file.path(img_dir, sprintf("sample_multi_%s.pdf", city_name_lower)), p, 
-ggsave(file.path(img_dir, "multiplier_decomposition_2099.png"), p_2099,
+
+ggsave(file.path(img_dir, sprintf("multiplier_decomposition_2099_%s.png", city_name_lower)), p_2099,
        width = 6, height = 4, dpi = 300, bg = "white")
-ggsave(file.path(img_dir, "multiplier_decomposition_2099.pdf"), p_2099,
+ggsave(file.path(img_dir, sprintf("multiplier_decomposition_2099_%s.pdf", city_name_lower)), p_2099,
        width = 6, height = 4, device = cairo_pdf)
 cat("  Saved multiplier_decomposition_2099.{png,pdf}\n")
 
 # Save JPG (referenced by main.tex)
-ggsave(file.path(img_dir, sprintf("sample_multi_%s.jpg", city_name_lower)), p, 
+ggsave(file.path(img_dir, sprintf("multiplier_decomposition_2099_%s.jpg", city_name_lower)), p_2099,
        width = 6, height = 4, dpi = 300, bg = "white")
 
 cat(sprintf("Plot saved to %s/sample_multi_%s.pdf\n", img_dir, city_name_lower))
