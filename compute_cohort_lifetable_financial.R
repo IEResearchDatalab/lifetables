@@ -699,23 +699,23 @@ cat("\nStep 16: Saving results...\n")
 if (!dir.exists("results_csv")) dir.create("results_csv")
 
 # Save cohort life table
-fwrite(output_lt, sprintf("results_csv/%s_cohort_lifetable_climate.csv", city_name_lower))
-cat(sprintf("  Saved: results_csv/%s_cohort_lifetable_climate.csv\n", city_name_lower))
+fwrite(output_lt, sprintf("results_csv/cohort_lifetable_climate_%s.csv", city_name_lower))
+cat(sprintf("  Saved: results_csv/cohort_lifetable_climate_%s.csv\n", city_name_lower))
 
 # Save EPV summary
-fwrite(epv_summary, sprintf("results_csv/%s_financial_impact_summary.csv", city_name_lower))
-cat(sprintf("  Saved: results_csv/%s_financial_impact_summary.csv\n", city_name_lower))
+fwrite(epv_summary, sprintf("results_csv/financial_impact_summary_%s.csv", city_name_lower))
+cat(sprintf("  Saved: results_csv/financial_impact_summary_%s.csv\n", city_name_lower))
 
 # Save validation data
-fwrite(temp_dist_baseline, sprintf("results_csv/%s_baseline_temp_distribution.csv", city_name_lower))
-cat(sprintf("  Saved: results_csv/%s_baseline_temp_distribution.csv\n", city_name_lower))
+fwrite(temp_dist_baseline, sprintf("results_csv/baseline_temp_distribution_%s.csv", city_name_lower))
+cat(sprintf("  Saved: results_csv/baseline_temp_distribution_%s.csv\n", city_name_lower))
 
-fwrite(validation_summary, sprintf("results_csv/%s_validation_summary.csv", city_name_lower))
-cat(sprintf("  Saved: results_csv/%s_validation_summary.csv\n", city_name_lower))
+fwrite(validation_summary, sprintf("results_csv/validation_summary_%s.csv", city_name_lower))
+cat(sprintf("  Saved: results_csv/validation_summary_%s.csv\n", city_name_lower))
 
 # Save multipliers for reference
-fwrite(multipliers, sprintf("results_csv/%s_mortality_multipliers_cohort.csv", city_name_lower))
-cat(sprintf("  Saved: results_csv/%s_mortality_multipliers_cohort.csv\n", city_name_lower))
+fwrite(multipliers, sprintf("results_csv/mortality_multipliers_cohort_%s.csv", city_name_lower))
+cat(sprintf("  Saved: results_csv/mortality_multipliers_cohort_%s.csv\n", city_name_lower))
 
 #------------------------------------------------------------------------------
 # Step 17: Print Summary Report

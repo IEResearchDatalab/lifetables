@@ -270,7 +270,7 @@ print(results[, .(min_mult = min(multiplier), max_mult = max(multiplier),
 #------------------------------------------------------------------------------
 
 cat("\nSaving results...\n")
-fwrite(results, sprintf("results_csv/%s_mortality_multiplier_by_age.csv", city_name_lower))
+fwrite(results, sprintf("results_csv/mortality_multiplier_by_age_%s.csv", city_name_lower))
 
 #------------------------------------------------------------------------------
 # Step 10: Create visualization
@@ -310,17 +310,17 @@ p <- ggplot(results, aes(x = age, y = multiplier, color = year_label)) +
   )
 
 # Save PNG
-ggsave(file.path(img_dir, "sample_multi.png"), p, 
+ggsave(file.path(img_dir, sprintf("sample_multi_%s.png", city_name_lower)), p, 
        width = 6, height = 4, dpi = 300, bg = "white")
 
 # Save PDF
-ggsave(file.path(img_dir, "sample_multi.pdf"), p, 
+ggsave(file.path(img_dir, sprintf("sample_multi_%s.pdf", city_name_lower)), p, 
        width = 6, height = 4, device = cairo_pdf)
 
 # Save JPG (referenced by main.tex)
-ggsave(file.path(img_dir, "sample_multi.jpg"), p, 
+ggsave(file.path(img_dir, sprintf("sample_multi_%s.jpg", city_name_lower)), p, 
        width = 6, height = 4, dpi = 300, bg = "white")
 
-cat(sprintf("Plot saved to %s/sample_multi.pdf\n", img_dir))
+cat(sprintf("Plot saved to %s/sample_multi_%s.pdf\n", img_dir, city_name_lower))
 
 cat("\nDone!\n")
