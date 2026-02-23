@@ -3,6 +3,10 @@ for (city_name in c("Bucharest", "Helsinki", "Rome")) {
   
   # Source the config file to set city-specific parameters
   source("config.R")
+
+  # Plot temperatures
+  #source("plot_bucharest_temp_dist_rr.R")
+  source("plot_bucharest_temp_evolution.R")
   
   # Run the mortality multiplier computation script
   source("compute_mortality_multiplier_by_age.R")
