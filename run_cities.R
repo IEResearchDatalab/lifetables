@@ -6,12 +6,13 @@ for (city_name in c("Bucharest", "Helsinki", "Rome")) {
   
   # Run the mortality multiplier computation script
   source("compute_mortality_multiplier_by_age.R")
+  source("plot_mortality_multiplier_evolution.R")
   
   # Run the cohort lifetable computation script
   source("compute_cohort_lifetable_financial.R")
-
-  # Aggregate results
-  source("aggregate_financial_impact.R")
   
   cat(sprintf("Finished processing city: %s\n\n", city_name))
 }
+
+# Aggregate results
+source("aggregate_financial_impact.R")
