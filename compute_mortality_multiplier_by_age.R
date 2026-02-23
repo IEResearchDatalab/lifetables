@@ -434,11 +434,11 @@ p_heat <- ggplot(results[component == "Heat"],
     plot.margin = margin(10, 15, 10, 10)
   )
 
-ggsave(file.path(img_dir, "sample_multi.png"), p_heat,
+ggsave(file.path(img_dir, sprintf("sample_multi_%s.png", city_name_lower)), p_heat,
        width = 6, height = 4, dpi = 300, bg = "white")
-ggsave(file.path(img_dir, "sample_multi.pdf"), p_heat,
+ggsave(file.path(img_dir, sprintf("sample_multi_%s.pdf", city_name_lower)), p_heat,
        width = 6, height = 4, device = cairo_pdf)
-ggsave(file.path(img_dir, "sample_multi.jpg"), p_heat,
+ggsave(file.path(img_dir, sprintf("sample_multi_%s.jpg", city_name_lower)), p_heat,
        width = 6, height = 4, dpi = 300, bg = "white")
 cat("  Saved sample_multi.{png,pdf,jpg}\n")
 
