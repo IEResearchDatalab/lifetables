@@ -86,7 +86,7 @@ cat(sprintf("  Loaded %d rows of projection data\n", nrow(proj_data)))
 cat(sprintf("  Using %d GCMs\n", length(gcm_cols)))
 
 #------------------------------------------------------------------------------
-# Step 3: Load RR Coefficients for Bucharest
+# Step 3: Load RR Coefficients for target
 #------------------------------------------------------------------------------
 
 cat("\nStep 3: Loading RR coefficients...\n")
@@ -287,7 +287,7 @@ cat("  cohort start year are expected to be > 1 (climate already warmer).\n")
 
 cat("\nStep 10: Loading Eurostat projected mortality data...\n")
 
-# Load Eurostat EUROPOP2019 regional projections for Bucharest
+# Load Eurostat EUROPOP2019 regional projections for target
 # This provides year-specific qx with built-in mortality improvement assumptions
 mort_proj <- fread(sprintf("data/%s_mortality_projections.csv", city_name_lower))
 
@@ -715,7 +715,7 @@ cat(sprintf("  Saved: results_csv/%s_validation_summary.csv\n", city_name_lower)
 
 # Save multipliers for reference
 fwrite(multipliers, sprintf("results_csv/%s_mortality_multipliers_cohort.csv", city_name_lower))
-cat("  Saved: results_csv/bucharest_mortality_multipliers_cohort.csv\n")
+cat(sprintf("  Saved: results_csv/%s_mortality_multipliers_cohort.csv\n", city_name_lower))
 
 #------------------------------------------------------------------------------
 # Step 17: Print Summary Report
@@ -735,7 +735,7 @@ cat(sprintf("  Interest rate: %.1f%%\n", interest_rate * 100))
 
 cat("\n--- Baseline Mortality Source ---\n")
 cat("  Source: Eurostat EUROPOP2019 Regional Projections (proj_19raasmr3 + proj_19rp3)\n")
-cat("  Region: București (Bucharest) - NUTS 3\n")
+cat(sprintf("  Region: %s - NUTS 3\n", city_name))
 cat("  Years: 2019-2100 (with built-in mortality improvement assumptions)\n")
 cat("  Sex: Population-weighted combination of male and female\n")
 cat(sprintf("  Baseline qx at age %d, %d: %.6f\n",
