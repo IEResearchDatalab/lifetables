@@ -9,6 +9,9 @@ for (city_name in c("Bucharest", "Helsinki", "Rome")) {
   
   # Run the cohort lifetable computation script
   source("compute_cohort_lifetable_financial.R")
+
+  # Aggregate results
+  source("aggregate_financial_impact.R")
   
   cat(sprintf("Finished processing city: %s\n\n", city_name))
 }
