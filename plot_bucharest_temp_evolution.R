@@ -238,11 +238,11 @@ p_evolution <- ggplot() +
 # Save
 ggsave(file.path(img_dir, paste0(city_name_lower, "_temp_evolution.png")), p_evolution,
        width = 12, height = 6, dpi = 300, bg = "white")
-cat(sprintf("Saved: %s/%s_temp_evolution.png\n", img_dir, city_name_lower))
+cat(sprintf("Saved: %s/temp_evolution_%s.png\n", img_dir, city_name_lower))
 
 ggsave(file.path(img_dir, paste0(city_name_lower, "_temp_evolution.pdf")), p_evolution,
        width = 12, height = 6, device = cairo_pdf)
-cat(sprintf("Saved: %s/%s_temp_evolution.pdf\n", img_dir, city_name_lower))
+cat(sprintf("Saved: %s/temp_evolution_%s.pdf\n", img_dir, city_name_lower))
 
 #------------------------------------------------------------------------------
 # Summary statistics

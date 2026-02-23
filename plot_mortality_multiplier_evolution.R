@@ -382,15 +382,15 @@ by_age_dt <- rbindlist(by_age_results)
 cat("\nStep 11: Saving CSVs...\n")
 
 fwrite(gcm_dt,
-       sprintf("results_csv/%s_mortality_multiplier_by_gcm.csv", city_name_lower))
+       sprintf("results_csv/mortality_multiplier_by_gcm_%s.csv", city_name_lower))
 fwrite(summary_dt,
-       sprintf("results_csv/%s_mortality_multiplier_summary.csv", city_name_lower))
+       sprintf("results_csv/mortality_multiplier_summary_%s.csv", city_name_lower))
 fwrite(rcp_combined_dt,
-       sprintf("results_csv/%s_mortality_multiplier_by_rcp_combined.csv", city_name_lower))
+       sprintf("results_csv/mortality_multiplier_by_rcp_combined_%s.csv", city_name_lower))
 fwrite(age_group_dt,
-       sprintf("results_csv/%s_mortality_multiplier_by_age_group.csv", city_name_lower))
+       sprintf("results_csv/mortality_multiplier_by_age_group_%s.csv", city_name_lower))
 fwrite(by_age_dt,
-       sprintf("results_csv/%s_mortality_multiplier_by_age_combined.csv", city_name_lower))
+       sprintf("results_csv/mortality_multiplier_by_age_combined_%s.csv", city_name_lower))
 
 cat("  Done.\n")
 
@@ -436,9 +436,9 @@ p1 <- ggplot(plot_evol, aes(x = year, color = rcp_label, fill = rcp_label)) +
   theme(legend.position = "bottom", legend.margin = margin(t = -5),
         plot.margin = margin(10, 15, 10, 10))
 
-ggsave("plots/%s_mortality_multiplier_evolution.png" |> sprintf(city_name_lower),
+ggsave("plots/mortality_multiplier_evolution_%s.png" |> sprintf(city_name_lower),
        p1, width = 7, height = 4.5, dpi = 300, bg = "white")
-ggsave("plots/%s_mortality_multiplier_evolution.pdf" |> sprintf(city_name_lower),
+ggsave("plots/mortality_multiplier_evolution_%s.pdf" |> sprintf(city_name_lower),
        p1, width = 7, height = 4.5, device = cairo_pdf)
 
 writeLines(sprintf(
@@ -452,7 +452,7 @@ using temperature-mortality exposure-response functions from the Multi-Country
 Multi-City (MCC) Collaborative Research Network.",
   rr_component, city_name, baseline_temp_label, length(gcm_cols),
   rr_component, baseline_temp_label
-), sprintf("plots/%s_mortality_multiplier_evolution_caption.txt", city_name_lower))
+), sprintf("plots/mortality_multiplier_evolution_%s_caption.txt", city_name_lower))
 
 cat("  Saved.\n")
 
@@ -490,9 +490,9 @@ pb <- ggplot(plot_evol, aes(x = year, color = rcp_label, fill = rcp_label)) +
 
 p2 <- pa | pb
 
-ggsave("plots/%s_mortality_multiplier_combined.png" |> sprintf(city_name_lower),
+ggsave("plots/mortality_multiplier_combined_%s.png" |> sprintf(city_name_lower),
        p2, width = 12, height = 5, dpi = 300, bg = "white")
-ggsave("plots/%s_mortality_multiplier_combined.pdf" |> sprintf(city_name_lower),
+ggsave("plots/mortality_multiplier_combined_%s.pdf" |> sprintf(city_name_lower),
        p2, width = 12, height = 5, device = cairo_pdf)
 
 writeLines(sprintf(
@@ -509,7 +509,7 @@ Multi-Country Multi-City (MCC) Collaborative Research Network.",
   city_name, baseline_temp_label,
   min(proj_years), max(proj_years), length(gcm_cols),
   baseline_temp_label
-), sprintf("plots/%s_mortality_multiplier_combined_caption.txt", city_name_lower))
+), sprintf("plots/mortality_multiplier_combined_%s_caption.txt", city_name_lower))
 
 cat("  Saved.\n")
 
@@ -542,9 +542,9 @@ p3 <- ggplot(age_group_dt,
   theme(legend.position = "bottom", legend.margin = margin(t = -5),
         plot.margin = margin(10, 15, 10, 10))
 
-ggsave("plots/%s_mortality_multiplier_age_groups.png" |> sprintf(city_name_lower),
+ggsave("plots/mortality_multiplier_age_groups_%s.png" |> sprintf(city_name_lower),
        p3, width = 7, height = 4.5, dpi = 300, bg = "white")
-ggsave("plots/%s_mortality_multiplier_age_groups.pdf" |> sprintf(city_name_lower),
+ggsave("plots/mortality_multiplier_age_groups_%s.pdf" |> sprintf(city_name_lower),
        p3, width = 7, height = 4.5, device = cairo_pdf)
 
 writeLines(sprintf(
@@ -559,7 +559,7 @@ temperature-mortality exposure-response functions from the Multi-Country Multi-C
 (MCC) Collaborative Research Network.",
   city_name, baseline_temp_label, length(gcm_cols),
   baseline_temp_label
-), sprintf("plots/%s_mortality_multiplier_age_groups_caption.txt", city_name_lower))
+), sprintf("plots/mortality_multiplier_age_groups_%s_caption.txt", city_name_lower))
 
 cat("  Saved.\n")
 
