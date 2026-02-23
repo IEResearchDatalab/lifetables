@@ -367,9 +367,9 @@ p_facet <- ggplot(results, aes(x = age, y = multiplier, color = component)) +
     plot.margin = margin(10, 15, 10, 10)
   )
 
-ggsave(file.path(img_dir, "multiplier_decomposition_by_year.png"), p_facet,
+ggsave(file.path(img_dir, sprintf("multiplier_decomposition_by_year_%s.png", city_name_lower)), p_facet,
        width = 9, height = 4, dpi = 300, bg = "white")
-ggsave(file.path(img_dir, "multiplier_decomposition_by_year.pdf"), p_facet,
+ggsave(file.path(img_dir, sprintf("multiplier_decomposition_by_year_%s.pdf", city_name_lower)), p_facet,
        width = 9, height = 4, device = cairo_pdf)
 cat("  Saved multiplier_decomposition_by_year.{png,pdf}\n")
 
@@ -393,10 +393,6 @@ p_2099 <- ggplot(results[year == 2099], aes(x = age, y = multiplier, color = com
     legend.margin = margin(t = -5),
     plot.margin = margin(10, 15, 10, 10)
   )
-
-# Save PNG
-ggsave(file.path(img_dir, sprintf("sample_multi_%s.png", city_name_lower)), p, 
-       width = 6, height = 4, dpi = 300, bg = "white")
 
 # Save PDF
 
