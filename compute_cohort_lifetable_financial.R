@@ -468,44 +468,81 @@ make_temp_dist <- function(temps) {
 }
 
 #------------------------------------------------------------------------------
-# Step 11.5: Save ALL scenario-year temp distributions
+# Step 11.5: Save ONE wide table of scenario-year temp distributions
+#            temp_bin, rcp, n_days_2019, n_days_2020, ...
 #------------------------------------------------------------------------------
+cat("\nStep 11.5: Building wide temperature distribution table...\n")
+
 if (!dir.exists("results_csv")) dir.create("results_csv")
 
-saved_temp_dists <- new.env(parent = emptyenv())  # to dedupe by (rcp, year)
+# Helper: count days by rounded temperature bin
+count_temp_bins <- function(temps) {
+  dt <- data.table(tmean = temps)
+  dt <- dt[!is.na(tmean)]
+  dt[, .(n_days = .N), by = .(temp_bin = round(tmean))]
+}
+
+# Choose which years to include in the wide table:
+# Option A: all years present in projection data (recommended)
+years_all <- sort(unique(proj_data$year))
+
+# If you want only cohort years instead, use:
+# years_all <- cohort_years
+
+wide_list <- list()
 
 for (ssp_val in ssp_codes) {
-  rcp_lab <- rcp_labels[ssp_val]
+
+  rcp_lab  <- rcp_labels[ssp_val]
+  rcp_safe <- gsub("[^A-Za-z0-9]+", "", rcp_lab)   # e.g., "RCP45"
+
   ssp_data <- proj_data[ssp == ssp_val]
 
-  for (yr in cohort_years) {
-
-    # if you want to exclude start year, keep the next line; otherwise remove it
-    # if (yr == cohort_start_year) next
+  for (yr in years_all) {
 
     year_data <- ssp_data[year == yr]
     if (nrow(year_data) == 0) next
 
-    key <- paste(rcp_lab, yr, sep = "__")
-    if (exists(key, envir = saved_temp_dists, inherits = FALSE)) next
-
     all_temps <- unlist(year_data[, ..gcm_cols], use.names = FALSE)
     all_temps <- all_temps[!is.na(all_temps)]
-
     if (length(all_temps) == 0) next
 
-    temp_dist <- make_temp_dist(all_temps)
+    dt_counts <- count_temp_bins(all_temps)
 
+    # Rename n_days column to n_days_<year>
+    setnames(dt_counts, "n_days", sprintf("n_days_%d", yr))
 
-    rcp_safe <- gsub("[^A-Za-z0-9]+", "", rcp_lab)  # "RCP45"
-    out_file <- sprintf("results_csv/temp_distribution_%s_%d_%s.csv",
-                        rcp_safe, yr, city_name_lower)
+    dt_counts[, `:=`(rcp = rcp_safe)]
 
-    fwrite(temp_dist, out_file)
-
-    assign(key, TRUE, envir = saved_temp_dists)
+    wide_list[[length(wide_list) + 1]] <- dt_counts
   }
 }
+
+# Combine all (rcp, year) bin counts (wide columns already named)
+wide_dt <- rbindlist(wide_list, fill = TRUE)
+
+# Aggregate in case of duplicates (shouldn't happen, but safe)
+num_cols <- setdiff(names(wide_dt), c("temp_bin", "rcp"))
+wide_dt <- wide_dt[, lapply(.SD, function(x) sum(x, na.rm = TRUE)),
+                   by = .(temp_bin, rcp),
+                   .SDcols = num_cols]
+
+# Ensure all year columns exist (fill missing with 0)
+year_cols <- sprintf("n_days_%d", years_all)
+missing_cols <- setdiff(year_cols, names(wide_dt))
+for (cc in missing_cols) wide_dt[, (cc) := 0L]
+
+# Order columns and rows nicely
+setcolorder(wide_dt, c("temp_bin", "rcp", year_cols))
+setorder(wide_dt, rcp, temp_bin)
+
+# Write output
+out_file <- sprintf("results_csv/temp_distribution_projection_%s.csv", city_name_lower)
+fwrite(wide_dt, out_file)
+
+cat(sprintf("  Saved: %s\n", out_file))
+cat(sprintf("  Rows: %d (temp_bin × rcp)\n", nrow(wide_dt)))
+cat(sprintf("  Year columns: %d\n", length(year_cols)))
 
 #------------------------------------------------------------------------------
 # Step 12: Build Cohort Life Tables
