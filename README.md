@@ -22,16 +22,17 @@ All outputs land in `img/` (figures) and `results_csv/` (tables). The LaTeX tabl
 
 We provide the pipeline [`run_cities.R`](./run_cities.R), that will run the full analysis for three target cities: Bucharest, Helsinki and Rome. The outputs of this pipeline are stored in the `results_csv/` folder, and include:
 
-- [`compute_seasonal_weights.R`](./compute_seasonal_weights.R)
-  - `seasonal_weights_daily` contains columns "age", "doy" (day of year), "week", "weight". Weights are normalized so that for each age, the sum of weights across all days of the year equals 1.
+- [`compute_seasonal_weights.R`](./compute_seasonal_weights.R) computes seasonal mortality weights by age and week of year, using Eurostat weekly death counts and PCLM ungrouping. It produces two CSV files:
   - `seasonal_weights_weekly` contains columns "age", "week", "deaths_pclm", "weight". Weights are normalized so that for each age, the sum of weights across all weeks of the year equals 1.
+  - `seasonal_weights_daily` contains columns "age", "doy" (day of year), "week", "weight". Weights are normalized so that for each age, the sum of weights across all days of the year equals 1.
 
 - [`compute_mortality_multiplier_by_age.R`](./compute_mortality_multiplier_by_age.R)
-  - `baseline_temp_distribution` contains columns "temp_bin" (integer), "n_days", "proportion". This represents the distribution of daily mean temperatures in the baseline year (2023) for the city, binned into 1°C intervals.
+  - `mortality_multiplier_by_age` contains columns "component" (Heat, Cold or Total), "year", "age", "avg_rr" (across that year), "multiplier" (proportion between climate-adjusted and baseline mortality rates), "year_label" (numeric).
 
 - [`compute_cohort_lifetable_financial.R`](./compute_cohort_lifetable_financial.R)
   - `cohort_lifetable_climate` contains columns "age", "year", "rcp", "adaptation" (in percentage), "qx_base" (baseline death probability), "qx_clim" (climate-adjusted death probability), "mx_base" (baseline mortality rate), "mx_clim" (climate-adjusted mortality rate), "multiplier" (proportion between climate-adjusted and baseline mortality rates), "lx_base" (number of survivors), "lx_clim", "dx_base" (number of deaths), "dx_clim".
   - `financial_impact_summary` contains columns "rcp,adaptation", "annuity_base", "annuity_clim", "delta_annuity", "pct_delta_annuity", "insurance_base", "insurance_clim", "delta_insurance", "pct_delta_insurance", "reserve_annuity_base", "reserve_annuity_clim", "delta_reserve_annuity", "pct_delta_reserve_annuity", "reserve_ins_base", "reserve_ins_clim", "delta_reserve_ins", "pct_delta_reserve_ins", "reserve_total_base", "reserve_total_clim", "delta_reserve_total", "pct_delta_reserve_total". This table summarises the financial impact of climate change on life insurance and annuity products, expressed in terms of changes in expected present value (EPV) under the baseline and climate-adjusted scenarios.
+  - `baseline_temp_distribution` contains columns "temp_bin" (integer), "n_days", "proportion". This represents the distribution of daily mean temperatures in the baseline year (2023) for the city, binned into 1°C intervals.
   - `validation_summary` contains columns "metric", "value".
   - `mortality_multipliers_cohort` contains colums "year", "age", "ssp" (taken directly from rcp), "adaptation", "rcp", "avg_rr", "multiplier".  
 
