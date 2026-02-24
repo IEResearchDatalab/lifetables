@@ -119,6 +119,81 @@ coefs_city <- coefs_all[URAU_CODE == city_code]
 cat(sprintf("Loaded coefficients for %d age groups\n", nrow(coefs_city)))
 
 #------------------------------------------------------------------------------
+# Step 2.5: Interpolate coefficients to single-year ages and save to results_csv
+#------------------------------------------------------------------------------
+
+cat("\nInterpolating coefficients to single-year ages and saving...\n")
+
+# Identify coefficient columns (b1..bk) from the original file
+coef_cols <- names(coefs_city)[grepl("^b[0-9]+$", names(coefs_city))]
+if (length(coef_cols) == 0) stop("No coefficient columns b1..bk found in coefs_city.")
+
+# Ensure age_midpoints and agelabs exist (from config.R)
+# agelabs: the agegroup labels in coefs_city (e.g. "20-29", ...)
+# age_midpoints: numeric midpoints for those labels (same length/order as agelabs)
+
+# Keep only rows in the same order as agelabs (important for correct interpolation)
+coefs_city_ord <- coefs_city[match(agelabs, agegroup)]
+if (any(is.na(coefs_city_ord$agegroup))) {
+  stop("Some agelabs not found in coefs_city$agegroup. Check config.R agelabs.")
+}
+
+# Single-year age range
+age_range <- 20:100
+
+# Interpolate EACH coefficient column across age midpoints -> single-year ages
+coef_interp_dt <- data.table(agegroup = as.character(age_range))
+for (cc in coef_cols) {
+  y <- coefs_city_ord[[cc]]
+  coef_interp_dt[[cc]] <- approx(
+    x = age_midpoints,
+    y = y,
+    xout = age_range,
+    rule = 2
+  )$y
+}
+
+# Build output table with EXACT same columns/order as the original coefs.csv
+# Strategy:
+# - Take a template row containing all non-coef fields (e.g., URAU_CODE, etc.)
+# - Replicate it for each single-year age
+# - Replace agegroup + b* columns
+
+template <- coefs_city_ord[1]
+
+# Columns in original, in exact order
+orig_cols <- names(coefs_all)
+
+# Replicate template to 81 rows (20..100)
+coefs_single_age <- template[rep(1, length(age_range))]
+
+# Overwrite agegroup and coefficient columns
+coefs_single_age[, agegroup := as.character(age_range)]
+for (cc in coef_cols) coefs_single_age[[cc]] <- coef_interp_dt[[cc]]
+
+# If URAU_CODE exists, keep it consistent (do not change)
+if ("URAU_CODE" %in% names(coefs_single_age)) {
+  coefs_single_age[, URAU_CODE := city_code]
+}
+
+# Ensure final output has EXACT same columns/order as original file
+# (If original has extra columns, they remain from template.)
+missing_cols <- setdiff(orig_cols, names(coefs_single_age))
+if (length(missing_cols) > 0) {
+  stop(sprintf("Interpolated coefs missing columns present in original coefs.csv: %s",
+               paste(missing_cols, collapse = ", ")))
+}
+coefs_single_age <- coefs_single_age[, ..orig_cols]
+
+# Save without overwriting the original data/coefs.csv
+if (!dir.exists("results_csv")) dir.create("results_csv")
+out_path <- file.path("results_csv", sprintf("coefs_%s.csv", city_name_lower))
+fwrite(coefs_single_age, out_path)
+
+cat(sprintf("  Saved interpolated single-age coefficients to: %s\n", out_path))
+cat(sprintf("  Rows: %d (ages %d-%d)\n", nrow(coefs_single_age), min(age_range), max(age_range)))
+
+#------------------------------------------------------------------------------
 # Step 3: Define basis function parameters using historical data
 #------------------------------------------------------------------------------
 

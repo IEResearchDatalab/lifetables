@@ -24,10 +24,6 @@ for (city_name in c("Bucharest", "Helsinki", "Rome")) {
 # Aggregate results
 source("aggregate_financial_impact.R")
 
-# Copy "coefs.csv" to "results_csv" for reference
-file.copy("data/coefs.csv", "results_csv/coefs.csv", overwrite = TRUE)
-cat("Copied coefs.csv to results_csv/coefs.csv\n")
-
 # Zip the output directory "results_csv"
 zip(zipfile = "results_csv.zip", files = list.files("results_csv", full.names = TRUE))
 # Show size of the zip file

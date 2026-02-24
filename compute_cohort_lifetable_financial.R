@@ -106,16 +106,33 @@ if (file.exists(seasonal_weights_file)) {
 }
 
 #------------------------------------------------------------------------------
-# Step 3: Load RR Coefficients for target
+# Step 3: Load RR Coefficients (single-year ages from results_csv)
 #------------------------------------------------------------------------------
 
-cat("\nStep 3: Loading RR coefficients...\n")
+cat("\nStep 3: Loading RR coefficients (single-year ages)...\n")
 
-coefs_all <- fread("data/coefs.csv")
+coefs_all <- fread(sprintf("results_csv/coefs_%s.csv", city_name_lower))
 coefs_city <- coefs_all[URAU_CODE == city_code]
 
-cat(sprintf("  Loaded coefficients for %d age groups\n", nrow(coefs_city)))
-print(coefs_city[, .(agegroup)])
+# agegroup is stored as "20","21",... -> make it integer
+coefs_city[, agegroup := as.integer(agegroup)]
+setkey(coefs_city, agegroup)
+
+# Single-year age range
+age_range <- 20:100
+
+# Sanity check: must have exactly one row per age
+missing_ages <- setdiff(age_range, coefs_city$agegroup)
+if (length(missing_ages) > 0) {
+  stop(sprintf("Missing coefficients for ages: %s", paste(missing_ages, collapse = ", ")))
+}
+dup_ages <- coefs_city[, .N, by = agegroup][N > 1]
+if (nrow(dup_ages) > 0) {
+  stop(sprintf("Duplicate coefficient rows for ages: %s", paste(dup_ages$agegroup, collapse = ", ")))
+}
+
+cat(sprintf("  Loaded coefficients for %d single-year ages (%d-%d)\n",
+            nrow(coefs_city), min(coefs_city$agegroup), max(coefs_city$agegroup)))
 
 #------------------------------------------------------------------------------
 # Step 4: Define Basis Function Parameters (Historical Reference)
@@ -137,74 +154,59 @@ cat(sprintf("  Knots at percentiles (%s): %.1f, %.1f, %.1f°C\n",
             paste(varper, collapse = ", "), varknots[1], varknots[2], varknots[3]))
 
 #------------------------------------------------------------------------------
-# Step 5: Build RR Curves for Each Age Group
+# Step 5: Build RR Curves for Each Single-Year Age (20-100) and compute MMT
 #------------------------------------------------------------------------------
 
-cat("\nStep 5: Building RR curves for each age group...\n")
+cat("\nStep 5: Building RR curves for each single-year age (20-100)...\n")
 
 temp_seq <- seq(varbound[1], varbound[2], by = 0.1)  # Fine resolution
 n_temp <- length(temp_seq)
 
 basis <- do.call(onebasis, c(list(x = temp_seq), argvar))
 
-# Store RR matrix: rows = temperature, columns = age groups
-rr_matrix_raw <- matrix(NA, nrow = n_temp, ncol = length(agelabs))
-mmt_vec <- numeric(length(agelabs))
-coef_list <- list()
+# Coefficient columns (b1..bk)
+coef_cols <- names(coefs_city)[grepl("^b[0-9]+$", names(coefs_city))]
+if (length(coef_cols) == 0) stop("No coefficient columns b1..bk found in coefs_city.")
 
-for (i in seq_along(agelabs)) {
-  age_grp <- agelabs[i]
-  coef_row <- coefs_city[agegroup == age_grp]
-  coefs <- as.numeric(coef_row[, .(b1, b2, b3, b4, b5)])
-  coef_list[[age_grp]] <- coefs
-  
-  log_rr <- basis %*% coefs
-  
-  # Find MMT in 25-99 percentile range
-  ind <- temp_seq >= quantile(temp_seq, 0.25) & temp_seq <= quantile(temp_seq, 0.99)
-  mmt <- temp_seq[ind][which.min(log_rr[ind])]
-  mmt_vec[i] <- mmt
-  
-  # Center at MMT
-  cenvec <- do.call(onebasis, c(list(x = mmt), argvar))
-  log_rr_centered <- log_rr - drop(cenvec %*% coefs)
-  
-  # Constraint: RR >= 1 (avoid spline noise)
-  rr <- pmax(exp(log_rr_centered), 1)
-  rr_matrix_raw[, i] <- as.vector(rr)
-  
-  cat(sprintf("  %s (midpoint: %.1f): MMT = %.1f°C\n", age_grp, age_midpoints[i], mmt))
-}
+# MMT search band (robust)
+q25 <- quantile(temp_seq, 0.25)
+q99 <- quantile(temp_seq, 0.99)
+ind <- temp_seq >= q25 & temp_seq <= q99
 
-names(mmt_vec) <- agelabs
-
-#------------------------------------------------------------------------------
-# Step 6: Interpolate RR to Single-Year Ages
-#------------------------------------------------------------------------------
-
-cat("\nStep 6: Interpolating RR to single-year ages (20-100)...\n")
-
-age_range <- 20:100
-
-# For each temperature, interpolate RR across ages
-rr_single_age <- matrix(NA, nrow = n_temp, ncol = length(age_range))
+# Store RR matrix: rows = temperature, cols = single-year ages
+rr_single_age <- matrix(NA_real_, nrow = n_temp, ncol = length(age_range))
 colnames(rr_single_age) <- age_range
 rownames(rr_single_age) <- temp_seq
 
-for (t_idx in seq_len(n_temp)) {
-  rr_at_temp <- rr_matrix_raw[t_idx, ]
-  # Linear interpolation with extrapolation at boundaries
-  rr_interp <- approx(x = age_midpoints, y = rr_at_temp, 
-                      xout = age_range, rule = 2)$y
-  rr_single_age[t_idx, ] <- rr_interp
-}
-
-# Also interpolate MMT for each single-year age
-mmt_single_age <- approx(x = age_midpoints, y = mmt_vec, 
-                         xout = age_range, rule = 2)$y
+# Store MMT per age
+mmt_single_age <- numeric(length(age_range))
 names(mmt_single_age) <- age_range
 
-cat(sprintf("  Interpolated to %d single-year ages (20-100)\n", length(age_range)))
+for (j in seq_along(age_range)) {
+  a <- age_range[j]
+
+  row <- coefs_city[agegroup == a]
+  # row is a 1-row data.table
+  coefs <- as.numeric(row[, ..coef_cols])
+
+  log_rr <- basis %*% coefs
+
+  # Find MMT
+  mmt <- temp_seq[ind][which.min(log_rr[ind])]
+  mmt_single_age[j] <- mmt
+
+  # Center at MMT
+  cenvec <- do.call(onebasis, c(list(x = mmt), argvar))
+  log_rr_centered <- log_rr - drop(cenvec %*% coefs)
+
+  # Enforce RR >= 1
+  rr <- pmax(exp(log_rr_centered), 1)
+
+  rr_single_age[, j] <- as.vector(rr)
+}
+
+cat(sprintf("  Built RR(T) for %d ages on %d temperature points\n",
+            length(age_range), n_temp))
 
 #------------------------------------------------------------------------------
 # Step 7: Fast Function to Compute Daily-Step Average RR with Adaptation
