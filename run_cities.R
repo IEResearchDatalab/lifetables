@@ -23,3 +23,6 @@ for (city_name in c("Bucharest", "Helsinki", "Rome")) {
 
 # Aggregate results
 source("aggregate_financial_impact.R")
+
+# Zip the output directory "results_csv"
+zip(zipfile = "results_csv.zip", files = list.files("results_csv", full.names = TRUE))

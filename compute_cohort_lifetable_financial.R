@@ -456,6 +456,58 @@ setkey(multipliers, ssp, adaptation, year, age)
 cat(sprintf("\n  Computed %d multiplier records\n", nrow(multipliers)))
 
 #------------------------------------------------------------------------------
+# Helper to build a temp distribution table (same format as baseline)
+#------------------------------------------------------------------------------
+make_temp_dist <- function(temps) {
+  dt <- data.table(tmean = temps)
+  dt <- dt[!is.na(tmean)]
+  dt <- dt[, .(n_days = .N), by = .(temp_bin = round(tmean))]
+  dt <- dt[order(temp_bin)]
+  dt[, proportion := n_days / sum(n_days)]
+  dt
+}
+
+#------------------------------------------------------------------------------
+# Step 11.5: Save ALL scenario-year temp distributions
+#------------------------------------------------------------------------------
+if (!dir.exists("results_csv")) dir.create("results_csv")
+
+saved_temp_dists <- new.env(parent = emptyenv())  # to dedupe by (rcp, year)
+
+for (ssp_val in ssp_codes) {
+  rcp_lab <- rcp_labels[ssp_val]
+  ssp_data <- proj_data[ssp == ssp_val]
+
+  for (yr in cohort_years) {
+
+    # if you want to exclude start year, keep the next line; otherwise remove it
+    # if (yr == cohort_start_year) next
+
+    year_data <- ssp_data[year == yr]
+    if (nrow(year_data) == 0) next
+
+    key <- paste(rcp_lab, yr, sep = "__")
+    if (exists(key, envir = saved_temp_dists, inherits = FALSE)) next
+
+    all_temps <- unlist(year_data[, ..gcm_cols], use.names = FALSE)
+    all_temps <- all_temps[!is.na(all_temps)]
+
+    if (length(all_temps) == 0) next
+
+    temp_dist <- make_temp_dist(all_temps)
+
+
+    rcp_safe <- gsub("[^A-Za-z0-9]+", "", rcp_lab)  # "RCP45"
+    out_file <- sprintf("results_csv/temp_distribution_%s_%d_%s.csv",
+                        rcp_safe, yr, city_name_lower)
+
+    fwrite(temp_dist, out_file)
+
+    assign(key, TRUE, envir = saved_temp_dists)
+  }
+}
+
+#------------------------------------------------------------------------------
 # Step 12: Build Cohort Life Tables
 #------------------------------------------------------------------------------
 
@@ -756,8 +808,8 @@ fwrite(epv_summary, sprintf("results_csv/financial_impact_summary_%s.csv", city_
 cat(sprintf("  Saved: results_csv/financial_impact_summary_%s.csv\n", city_name_lower))
 
 # Save validation data
-fwrite(temp_dist_baseline, sprintf("results_csv/baseline_temp_distribution_%s.csv", city_name_lower))
-cat(sprintf("  Saved: results_csv/baseline_temp_distribution_%s.csv\n", city_name_lower))
+fwrite(temp_dist_baseline, sprintf("results_csv/temp_distribution_baseline_%s.csv", city_name_lower))
+cat(sprintf("  Saved: results_csv/temp_distribution_baseline_%s.csv\n", city_name_lower))
 
 fwrite(validation_summary, sprintf("results_csv/validation_summary_%s.csv", city_name_lower))
 cat(sprintf("  Saved: results_csv/validation_summary_%s.csv\n", city_name_lower))
