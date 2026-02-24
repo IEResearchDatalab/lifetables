@@ -3,11 +3,11 @@
 # ==============================================================================
 #
 # Downloads weekly deaths by 5-year age group from Eurostat (demo_r_mweek3)
-# for the target NUTS 3 region (Bucharest), averages over a reference period,
+# for the target NUTS 3 region, averages over a reference period,
 # then applies PCLM ungrouping to obtain single-year age × week-of-year
 # seasonal mortality weights.
 #
-# Output: results_csv/bucharest_seasonal_weights.csv
+# Output: results_csvseasonal_weights.csv
 #   Columns: age, week, weight  (weight sums to 1 within each age)
 #
 # The weights capture when during the year baseline deaths concentrate,
@@ -201,14 +201,14 @@ cat("\nStep 7: Saving outputs...\n")
 
 # Weekly weights (compact)
 fwrite(pclm_all[, .(age, week, deaths_pclm, weight)],
-       "results_csv/bucharest_seasonal_weights_weekly.csv")
+       sprintf("results_csv/seasonal_weights_weekly_%s.csv", city_name_lower))
 
 # Daily weights (for pipeline integration)
 fwrite(daily_weights,
-       "results_csv/bucharest_seasonal_weights_daily.csv")
+       sprintf("results_csv/seasonal_weights_daily_%s.csv", city_name_lower))
 
-cat("  Saved: results_csv/bucharest_seasonal_weights_weekly.csv\n")
-cat("  Saved: results_csv/bucharest_seasonal_weights_daily.csv\n")
+cat(sprintf("  Saved: results_csv/seasonal_weights_weekly_%s.csv\n", city_name_lower))
+cat(sprintf("  Saved: results_csv/seasonal_weights_daily_%s.csv\n", city_name_lower))
 
 # ==============================================================================
 # STEP 8: Diagnostic plots

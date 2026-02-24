@@ -88,7 +88,7 @@ cat(sprintf("  Loaded %d rows of projection data\n", nrow(proj_data)))
 cat(sprintf("  Using %d GCMs\n", length(gcm_cols)))
 
 # --- Load seasonal mortality weights ---
-seasonal_weights_file <- "results_csv/bucharest_seasonal_weights_daily.csv"
+seasonal_weights_file <- sprintf("results_csv/seasonal_weights_daily_%s.csv", city_name_lower)
 if (file.exists(seasonal_weights_file)) {
   sw_dt <- fread(seasonal_weights_file)
   # Build lookup matrix: rows = ages 20..100 (81), cols = doy 1..365
