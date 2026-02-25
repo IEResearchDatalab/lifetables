@@ -24,6 +24,18 @@ for (city_name in c("Bucharest", "Helsinki", "Rome")) {
 # Aggregate results
 source("aggregate_financial_impact.R")
 
+# Include the mortality projections from "data" folder
+# (hardcode it here)
+for (city in c("Bucharest", "Helsinki", "Rome")) {
+  cat(sprintf("Processing mortality projections for city: %s\n", city))
+  
+  # Load the mortality projections CSV file for the city
+  mortality_file <- sprintf("data/%s_mortality_projections.csv", tolower(city))
+  # Copy it into the "results_csv" directory with a standardized name
+  output_file <- sprintf("results_csv/%s_mortality_projections.csv", tolower(city))
+  file.copy(mortality_file, output_file, overwrite = TRUE)
+}
+
 # Zip the output directory "results_csv"
 zip(zipfile = "results_csv.zip", files = list.files("results_csv", full.names = TRUE))
 # Show size of the zip file
