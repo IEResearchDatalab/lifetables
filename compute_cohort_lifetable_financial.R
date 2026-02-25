@@ -78,6 +78,8 @@ proj_data <- open_dataset("data/tmeanproj.gz.parquet") %>%
   as.data.table()
 
 proj_data[, year := year(date)]
+proj_data[, doy := as.integer(format(date, "%j"))]
+proj_data[doy > 365, doy := 365L]  # cap leap-year day 366
 
 gcm_cols <- names(proj_data)[grepl("^tas_", names(proj_data))]
 gcm_cols <- gcm_cols[!gsub("tas_", "", gcm_cols) %in% gcmexcl]
@@ -85,17 +87,52 @@ gcm_cols <- gcm_cols[!gsub("tas_", "", gcm_cols) %in% gcmexcl]
 cat(sprintf("  Loaded %d rows of projection data\n", nrow(proj_data)))
 cat(sprintf("  Using %d GCMs\n", length(gcm_cols)))
 
+# --- Load seasonal mortality weights ---
+seasonal_weights_file <- sprintf("results_csv/seasonal_weights_daily_%s.csv", city_name_lower)
+if (file.exists(seasonal_weights_file)) {
+  sw_dt <- fread(seasonal_weights_file)
+  # Build lookup matrix: rows = ages 20..100 (81), cols = doy 1..365
+  sw_matrix <- matrix(1 / 365, nrow = 81, ncol = 365,
+                      dimnames = list(20:100, 1:365))
+  for (i in seq_len(nrow(sw_dt))) {
+    a <- sw_dt$age[i]; d <- sw_dt$doy[i]
+    sw_matrix[as.character(a), d] <- sw_dt$weight[i]
+  }
+  use_seasonal_weights <- TRUE
+  cat("  Loaded seasonal mortality weights (age × DOY)\n")
+} else {
+  use_seasonal_weights <- FALSE
+  cat("  Seasonal weights not found — using uniform weighting\n")
+}
+
 #------------------------------------------------------------------------------
-# Step 3: Load RR Coefficients for Bucharest
+# Step 3: Load RR Coefficients (single-year ages from results_csv)
 #------------------------------------------------------------------------------
 
-cat("\nStep 3: Loading RR coefficients...\n")
+cat("\nStep 3: Loading RR coefficients (single-year ages)...\n")
 
-coefs_all <- fread("data/coefs.csv")
+coefs_all <- fread(sprintf("results_csv/coefs_%s.csv", city_name_lower))
 coefs_city <- coefs_all[URAU_CODE == city_code]
 
-cat(sprintf("  Loaded coefficients for %d age groups\n", nrow(coefs_city)))
-print(coefs_city[, .(agegroup)])
+# agegroup is stored as "20","21",... -> make it integer
+coefs_city[, agegroup := as.integer(agegroup)]
+setkey(coefs_city, agegroup)
+
+# Single-year age range
+age_range <- 20:100
+
+# Sanity check: must have exactly one row per age
+missing_ages <- setdiff(age_range, coefs_city$agegroup)
+if (length(missing_ages) > 0) {
+  stop(sprintf("Missing coefficients for ages: %s", paste(missing_ages, collapse = ", ")))
+}
+dup_ages <- coefs_city[, .N, by = agegroup][N > 1]
+if (nrow(dup_ages) > 0) {
+  stop(sprintf("Duplicate coefficient rows for ages: %s", paste(dup_ages$agegroup, collapse = ", ")))
+}
+
+cat(sprintf("  Loaded coefficients for %d single-year ages (%d-%d)\n",
+            nrow(coefs_city), min(coefs_city$agegroup), max(coefs_city$agegroup)))
 
 #------------------------------------------------------------------------------
 # Step 4: Define Basis Function Parameters (Historical Reference)
@@ -117,74 +154,59 @@ cat(sprintf("  Knots at percentiles (%s): %.1f, %.1f, %.1f°C\n",
             paste(varper, collapse = ", "), varknots[1], varknots[2], varknots[3]))
 
 #------------------------------------------------------------------------------
-# Step 5: Build RR Curves for Each Age Group
+# Step 5: Build RR Curves for Each Single-Year Age (20-100) and compute MMT
 #------------------------------------------------------------------------------
 
-cat("\nStep 5: Building RR curves for each age group...\n")
+cat("\nStep 5: Building RR curves for each single-year age (20-100)...\n")
 
 temp_seq <- seq(varbound[1], varbound[2], by = 0.1)  # Fine resolution
 n_temp <- length(temp_seq)
 
 basis <- do.call(onebasis, c(list(x = temp_seq), argvar))
 
-# Store RR matrix: rows = temperature, columns = age groups
-rr_matrix_raw <- matrix(NA, nrow = n_temp, ncol = length(agelabs))
-mmt_vec <- numeric(length(agelabs))
-coef_list <- list()
+# Coefficient columns (b1..bk)
+coef_cols <- names(coefs_city)[grepl("^b[0-9]+$", names(coefs_city))]
+if (length(coef_cols) == 0) stop("No coefficient columns b1..bk found in coefs_city.")
 
-for (i in seq_along(agelabs)) {
-  age_grp <- agelabs[i]
-  coef_row <- coefs_city[agegroup == age_grp]
-  coefs <- as.numeric(coef_row[, .(b1, b2, b3, b4, b5)])
-  coef_list[[age_grp]] <- coefs
-  
-  log_rr <- basis %*% coefs
-  
-  # Find MMT in 25-99 percentile range
-  ind <- temp_seq >= quantile(temp_seq, 0.25) & temp_seq <= quantile(temp_seq, 0.99)
-  mmt <- temp_seq[ind][which.min(log_rr[ind])]
-  mmt_vec[i] <- mmt
-  
-  # Center at MMT
-  cenvec <- do.call(onebasis, c(list(x = mmt), argvar))
-  log_rr_centered <- log_rr - drop(cenvec %*% coefs)
-  
-  # Constraint: RR >= 1 (avoid spline noise)
-  rr <- pmax(exp(log_rr_centered), 1)
-  rr_matrix_raw[, i] <- as.vector(rr)
-  
-  cat(sprintf("  %s (midpoint: %.1f): MMT = %.1f°C\n", age_grp, age_midpoints[i], mmt))
-}
+# MMT search band (robust)
+q25 <- quantile(temp_seq, 0.25)
+q99 <- quantile(temp_seq, 0.99)
+ind <- temp_seq >= q25 & temp_seq <= q99
 
-names(mmt_vec) <- agelabs
-
-#------------------------------------------------------------------------------
-# Step 6: Interpolate RR to Single-Year Ages
-#------------------------------------------------------------------------------
-
-cat("\nStep 6: Interpolating RR to single-year ages (20-100)...\n")
-
-age_range <- 20:100
-
-# For each temperature, interpolate RR across ages
-rr_single_age <- matrix(NA, nrow = n_temp, ncol = length(age_range))
+# Store RR matrix: rows = temperature, cols = single-year ages
+rr_single_age <- matrix(NA_real_, nrow = n_temp, ncol = length(age_range))
 colnames(rr_single_age) <- age_range
 rownames(rr_single_age) <- temp_seq
 
-for (t_idx in seq_len(n_temp)) {
-  rr_at_temp <- rr_matrix_raw[t_idx, ]
-  # Linear interpolation with extrapolation at boundaries
-  rr_interp <- approx(x = age_midpoints, y = rr_at_temp, 
-                      xout = age_range, rule = 2)$y
-  rr_single_age[t_idx, ] <- rr_interp
-}
-
-# Also interpolate MMT for each single-year age
-mmt_single_age <- approx(x = age_midpoints, y = mmt_vec, 
-                         xout = age_range, rule = 2)$y
+# Store MMT per age
+mmt_single_age <- numeric(length(age_range))
 names(mmt_single_age) <- age_range
 
-cat(sprintf("  Interpolated to %d single-year ages (20-100)\n", length(age_range)))
+for (j in seq_along(age_range)) {
+  a <- age_range[j]
+
+  row <- coefs_city[agegroup == a]
+  # row is a 1-row data.table
+  coefs <- as.numeric(row[, ..coef_cols])
+
+  log_rr <- basis %*% coefs
+
+  # Find MMT
+  mmt <- temp_seq[ind][which.min(log_rr[ind])]
+  mmt_single_age[j] <- mmt
+
+  # Center at MMT
+  cenvec <- do.call(onebasis, c(list(x = mmt), argvar))
+  log_rr_centered <- log_rr - drop(cenvec %*% coefs)
+
+  # Enforce RR >= 1
+  rr <- pmax(exp(log_rr_centered), 1)
+
+  rr_single_age[, j] <- as.vector(rr)
+}
+
+cat(sprintf("  Built RR(T) for %d ages on %d temperature points\n",
+            length(age_range), n_temp))
 
 #------------------------------------------------------------------------------
 # Step 7: Fast Function to Compute Daily-Step Average RR with Adaptation
@@ -205,8 +227,11 @@ apply_adaptation_vec <- function(rr_vec, temps, mmt, adapt_level) {
 
 # Fast vectorized function to compute daily-step average RR for all ages
 # component: "total" (default), "heat" (days > MMT only), or "cold" (days <= MMT only)
+# doys: optional integer vector of day-of-year (1-365) paralleling temps,
+#       used for seasonal mortality weighting when use_seasonal_weights = TRUE.
 compute_daily_avg_rr_all_ages <- function(temps, mmt_vec, adapt_level = 0,
-                                          component = rr_component) {
+                                          component = rr_component,
+                                          doys = NULL) {
   temps <- temps[!is.na(temps)]
   if (length(temps) == 0) return(rep(NA_real_, length(age_range)))
   
@@ -230,7 +255,13 @@ compute_daily_avg_rr_all_ages <- function(temps, mmt_vec, adapt_level = 0,
       rr_adapted[temps > mmt] <- 1
     }
     
-    avg_rr[j] <- mean(rr_adapted)
+    # Seasonal mortality weighting
+    if (use_seasonal_weights && !is.null(doys)) {
+      w <- sw_matrix[as.character(age_range[j]), doys]
+      avg_rr[j] <- weighted.mean(rr_adapted, w)
+    } else {
+      avg_rr[j] <- mean(rr_adapted)
+    }
   }
   
   return(avg_rr)
@@ -250,11 +281,19 @@ cat(sprintf("  RR component: %s\n", rr_component))
 baseline_hist <- proj_data[ssp == "hist" & year %in% baseline_temp_period]
 baseline_proj <- proj_data[ssp %in% ssp_codes & year %in% baseline_temp_period & year > 2014]
 
-# Pool all daily temperatures from all GCMs
+# Pool all daily temperatures from all GCMs (with matching DOYs)
 baseline_temps_hist <- unlist(baseline_hist[, ..gcm_cols], use.names = FALSE)
 baseline_temps_proj <- unlist(baseline_proj[, ..gcm_cols], use.names = FALSE)
 baseline_temps_all  <- c(baseline_temps_hist, baseline_temps_proj)
-baseline_temps_all  <- baseline_temps_all[!is.na(baseline_temps_all)]
+
+baseline_doys_hist <- rep(baseline_hist$doy, length(gcm_cols))
+baseline_doys_proj <- rep(baseline_proj$doy, length(gcm_cols))
+baseline_doys_all  <- c(baseline_doys_hist, baseline_doys_proj)
+
+# Remove NAs in parallel
+valid_bl <- !is.na(baseline_temps_all)
+baseline_temps_all <- baseline_temps_all[valid_bl]
+baseline_doys_all  <- baseline_doys_all[valid_bl]
 
 cat(sprintf("  Pooled %s daily temperature values for baseline\n",
             format(length(baseline_temps_all), big.mark = ",")))
@@ -263,7 +302,8 @@ cat(sprintf("  Baseline temperature range: %.1f°C to %.1f°C\n",
 cat(sprintf("  Baseline mean temperature: %.2f°C\n", mean(baseline_temps_all)))
 
 # Compute baseline RR by age using the climatological temperature distribution
-rr_baseline_by_age <- compute_daily_avg_rr_all_ages(baseline_temps_all, mmt_single_age, 0)
+rr_baseline_by_age <- compute_daily_avg_rr_all_ages(baseline_temps_all, mmt_single_age, 0,
+                                                     doys = baseline_doys_all)
 names(rr_baseline_by_age) <- age_range
 
 cat(sprintf("  Baseline reference RR range: %.4f to %.4f\n", 
@@ -287,7 +327,7 @@ cat("  cohort start year are expected to be > 1 (climate already warmer).\n")
 
 cat("\nStep 10: Loading Eurostat projected mortality data...\n")
 
-# Load Eurostat EUROPOP2019 regional projections for Bucharest
+# Load Eurostat EUROPOP2019 regional projections for target
 # This provides year-specific qx with built-in mortality improvement assumptions
 mort_proj <- fread(sprintf("data/%s_mortality_projections.csv", city_name_lower))
 
@@ -350,12 +390,16 @@ for (ssp_val in ssp_codes) {
                         ifelse(yr >= tf_adapt, adapt_final,
                                adapt_final * (yr - t0_adapt) / (tf_adapt - t0_adapt)))
       
-      # Pool temperatures from all GCMs (vectorized)
+      # Pool temperatures from all GCMs (vectorized) with DOYs
       all_temps <- unlist(year_data[, ..gcm_cols], use.names = FALSE)
-      all_temps <- all_temps[!is.na(all_temps)]
+      all_doys  <- rep(year_data$doy, length(gcm_cols))
+      valid_yr  <- !is.na(all_temps)
+      all_temps <- all_temps[valid_yr]
+      all_doys  <- all_doys[valid_yr]
       
       # Compute multiplier for all ages at once (vectorized)
-      avg_rr_vec <- compute_daily_avg_rr_all_ages(all_temps, mmt_single_age, adapt_t)
+      avg_rr_vec <- compute_daily_avg_rr_all_ages(all_temps, mmt_single_age, adapt_t,
+                                                   doys = all_doys)
       multiplier_vec <- avg_rr_vec / rr_baseline_by_age
       
       # Store results for all ages
@@ -383,8 +427,15 @@ start_year_temps <- c(
   unlist(start_year_data_hist[, ..gcm_cols], use.names = FALSE),
   unlist(start_year_data_proj[, ..gcm_cols], use.names = FALSE)
 )
-start_year_temps <- start_year_temps[!is.na(start_year_temps)]
-rr_start_year <- compute_daily_avg_rr_all_ages(start_year_temps, mmt_single_age, 0)
+start_year_doys <- c(
+  rep(start_year_data_hist$doy, length(gcm_cols)),
+  rep(start_year_data_proj$doy, length(gcm_cols))
+)
+valid_sy <- !is.na(start_year_temps)
+start_year_temps <- start_year_temps[valid_sy]
+start_year_doys  <- start_year_doys[valid_sy]
+rr_start_year <- compute_daily_avg_rr_all_ages(start_year_temps, mmt_single_age, 0,
+                                                doys = start_year_doys)
 multiplier_start_year <- rr_start_year / rr_baseline_by_age
 names(multiplier_start_year) <- age_range
 
@@ -405,6 +456,95 @@ multipliers <- rbind(baseline_mult, multipliers)
 setkey(multipliers, ssp, adaptation, year, age)
 
 cat(sprintf("\n  Computed %d multiplier records\n", nrow(multipliers)))
+
+#------------------------------------------------------------------------------
+# Helper to build a temp distribution table (same format as baseline)
+#------------------------------------------------------------------------------
+make_temp_dist <- function(temps) {
+  dt <- data.table(tmean = temps)
+  dt <- dt[!is.na(tmean)]
+  dt <- dt[, .(n_days = .N), by = .(temp_bin = round(tmean))]
+  dt <- dt[order(temp_bin)]
+  dt[, proportion := n_days / sum(n_days)]
+  dt
+}
+
+#------------------------------------------------------------------------------
+# Step 11.5: Save ONE wide table of scenario-year temp distributions
+#            temp_bin, rcp, n_days_2019, n_days_2020, ...
+#------------------------------------------------------------------------------
+cat("\nStep 11.5: Building wide temperature distribution table...\n")
+
+if (!dir.exists("results_csv")) dir.create("results_csv")
+
+# Helper: count days by rounded temperature bin
+count_temp_bins <- function(temps) {
+  dt <- data.table(tmean = temps)
+  dt <- dt[!is.na(tmean)]
+  dt[, .(n_days = .N), by = .(temp_bin = round(tmean))]
+}
+
+# Choose which years to include in the wide table:
+# Option A: all years present in projection data (recommended)
+years_all <- sort(unique(proj_data$year))
+
+# If you want only cohort years instead, use:
+# years_all <- cohort_years
+
+wide_list <- list()
+
+for (ssp_val in ssp_codes) {
+
+  rcp_lab  <- rcp_labels[ssp_val]
+  rcp_safe <- gsub("[^A-Za-z0-9]+", "", rcp_lab)   # e.g., "RCP45"
+
+  ssp_data <- proj_data[ssp == ssp_val]
+
+  for (yr in years_all) {
+
+    year_data <- ssp_data[year == yr]
+    if (nrow(year_data) == 0) next
+
+    all_temps <- unlist(year_data[, ..gcm_cols], use.names = FALSE)
+    all_temps <- all_temps[!is.na(all_temps)]
+    if (length(all_temps) == 0) next
+
+    dt_counts <- count_temp_bins(all_temps)
+
+    # Rename n_days column to n_days_<year>
+    setnames(dt_counts, "n_days", sprintf("n_days_%d", yr))
+
+    dt_counts[, `:=`(rcp = rcp_safe)]
+
+    wide_list[[length(wide_list) + 1]] <- dt_counts
+  }
+}
+
+# Combine all (rcp, year) bin counts (wide columns already named)
+wide_dt <- rbindlist(wide_list, fill = TRUE)
+
+# Aggregate in case of duplicates (shouldn't happen, but safe)
+num_cols <- setdiff(names(wide_dt), c("temp_bin", "rcp"))
+wide_dt <- wide_dt[, lapply(.SD, function(x) sum(x, na.rm = TRUE)),
+                   by = .(temp_bin, rcp),
+                   .SDcols = num_cols]
+
+# Ensure all year columns exist (fill missing with 0)
+year_cols <- sprintf("n_days_%d", years_all)
+missing_cols <- setdiff(year_cols, names(wide_dt))
+for (cc in missing_cols) wide_dt[, (cc) := 0L]
+
+# Order columns and rows nicely
+setcolorder(wide_dt, c("temp_bin", "rcp", year_cols))
+setorder(wide_dt, rcp, temp_bin)
+
+# Write output
+out_file <- sprintf("results_csv/temp_distribution_projection_%s.csv", city_name_lower)
+fwrite(wide_dt, out_file)
+
+cat(sprintf("  Saved: %s\n", out_file))
+cat(sprintf("  Rows: %d (temp_bin × rcp)\n", nrow(wide_dt)))
+cat(sprintf("  Year columns: %d\n", length(year_cols)))
 
 #------------------------------------------------------------------------------
 # Step 12: Build Cohort Life Tables
@@ -699,23 +839,23 @@ cat("\nStep 16: Saving results...\n")
 if (!dir.exists("results_csv")) dir.create("results_csv")
 
 # Save cohort life table
-fwrite(output_lt, sprintf("results_csv/%s_cohort_lifetable_climate.csv", city_name_lower))
-cat(sprintf("  Saved: results_csv/%s_cohort_lifetable_climate.csv\n", city_name_lower))
+fwrite(output_lt, sprintf("results_csv/cohort_lifetable_climate_%s.csv", city_name_lower))
+cat(sprintf("  Saved: results_csv/cohort_lifetable_climate_%s.csv\n", city_name_lower))
 
 # Save EPV summary
-fwrite(epv_summary, sprintf("results_csv/%s_financial_impact_summary.csv", city_name_lower))
-cat(sprintf("  Saved: results_csv/%s_financial_impact_summary.csv\n", city_name_lower))
+fwrite(epv_summary, sprintf("results_csv/financial_impact_summary_%s.csv", city_name_lower))
+cat(sprintf("  Saved: results_csv/financial_impact_summary_%s.csv\n", city_name_lower))
 
 # Save validation data
-fwrite(temp_dist_baseline, sprintf("results_csv/%s_baseline_temp_distribution.csv", city_name_lower))
-cat(sprintf("  Saved: results_csv/%s_baseline_temp_distribution.csv\n", city_name_lower))
+fwrite(temp_dist_baseline, sprintf("results_csv/temp_distribution_baseline_%s.csv", city_name_lower))
+cat(sprintf("  Saved: results_csv/temp_distribution_baseline_%s.csv\n", city_name_lower))
 
-fwrite(validation_summary, sprintf("results_csv/%s_validation_summary.csv", city_name_lower))
-cat(sprintf("  Saved: results_csv/%s_validation_summary.csv\n", city_name_lower))
+fwrite(validation_summary, sprintf("results_csv/validation_summary_%s.csv", city_name_lower))
+cat(sprintf("  Saved: results_csv/validation_summary_%s.csv\n", city_name_lower))
 
 # Save multipliers for reference
-fwrite(multipliers, sprintf("results_csv/%s_mortality_multipliers_cohort.csv", city_name_lower))
-cat("  Saved: results_csv/bucharest_mortality_multipliers_cohort.csv\n")
+fwrite(multipliers, sprintf("results_csv/mortality_multipliers_cohort_%s.csv", city_name_lower))
+cat(sprintf("  Saved: results_csv/mortality_multipliers_cohort_%s.csv\n", city_name_lower))
 
 #------------------------------------------------------------------------------
 # Step 17: Print Summary Report
@@ -735,7 +875,7 @@ cat(sprintf("  Interest rate: %.1f%%\n", interest_rate * 100))
 
 cat("\n--- Baseline Mortality Source ---\n")
 cat("  Source: Eurostat EUROPOP2019 Regional Projections (proj_19raasmr3 + proj_19rp3)\n")
-cat("  Region: București (Bucharest) - NUTS 3\n")
+cat(sprintf("  Region: %s - NUTS 3\n", city_name))
 cat("  Years: 2019-2100 (with built-in mortality improvement assumptions)\n")
 cat("  Sex: Population-weighted combination of male and female\n")
 cat(sprintf("  Baseline qx at age %d, %d: %.6f\n",

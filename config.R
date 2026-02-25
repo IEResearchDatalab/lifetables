@@ -13,9 +13,23 @@
 ################################################################################
 
 # ---- City identifiers ----
-city_code  <- "RO001C"       # URAU code (Urban Audit)
-city_name  <- "Bucharest"    # Human-readable name (used in titles and captions)
-nuts3_code <- "RO321"        # NUTS 3 code (Eurostat projections)
+#city_name <- "Bucharest"  # City name (for labeling outputs)
+# Deactivated to use "run_cities.R" loop instead
+city_name_lower <- tolower(city_name)  # Lowercase version for file paths
+
+# Decide city_code and nuts3_code based on city_name
+if (city_name == "Bucharest") {
+  city_code <- "RO001C"
+  nuts3_code <- "RO321"
+} else if (city_name == "Helsinki") {
+  city_code <- "FI001C"
+  nuts3_code <- "FI1B1"
+} else if (city_name == "Rome") {
+  city_code <- "IT001C"
+  nuts3_code <- "ITI43"
+} else {
+  stop("City not recognized. Please update config.R with the correct city_code and nuts3_code for the specified city_name.")
+}
 
 # ---- Output directory for figures (used by main.tex) ----
 img_dir <- "img"
@@ -51,7 +65,7 @@ rcp_labels <- c("1" = "RCP 2.6", "2" = "RCP 4.5", "3" = "RCP 7.0")
 # "heat"   = heat-only: RR kept for days > MMT, set to 1 for cold days
 #            (isolates climate-change-driven heat risk; removes cold offset)
 # "cold"   = cold-only: RR kept for days <= MMT, set to 1 for heat days
-rr_component <- "heat"
+rr_component <- "total"
 
 # ---- Adaptation scenarios (heat-risk attenuation by 2100) ----
 adaptation_levels <- c(0, 0.50, 0.90)

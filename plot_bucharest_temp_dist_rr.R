@@ -351,12 +351,12 @@ p_combined <- ggplot() +
 # Save
 ggsave(file.path(img_dir, paste0(city_name_lower, "_temp_dist_rr.png")), p_combined,
        width = 10, height = 6, dpi = 300, bg = "white")
-cat(sprintf("Saved: %s/%s_temp_dist_rr.png\n", img_dir, city_name_lower))
+cat(sprintf("Saved: %s/temp_dist_rr_%s.png\n", img_dir, city_name_lower))
 
 # Also save as PDF for LaTeX
 ggsave(file.path(img_dir, paste0(city_name_lower, "_temp_dist_rr.pdf")), p_combined,
        width = 10, height = 6, device = cairo_pdf)
-cat(sprintf("Saved: %s/%s_temp_dist_rr.pdf\n", img_dir, city_name_lower))
+cat(sprintf("Saved: %s/temp_dist_rr_%s.pdf\n", img_dir, city_name_lower))
 
 #------------------------------------------------------------------------------
 # Summary statistics

@@ -1,0 +1,10 @@
+name: climate-mortality-dashboard
+title: Climate–Mortality Pipeline Dashboard
+username: fjsuarez
+account: fjsuarez
+server: shinyapps.io
+hostUrl: https://api.shinyapps.io/v1
+appId: 16637203
+bundleId: 11562178
+url: https://fjsuarez.shinyapps.io/climate-mortality-dashboard/
+version: 1
