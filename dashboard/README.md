@@ -39,7 +39,7 @@ This creates `dashboard/data/` with:
    ```
 3. Deploy:
    ```r
-   source("deploy_shinyapps.R")
+   source("dashboard/deploy_shinyapps.R")
    ```
 
 ## Deploy with Docker (self-hosted)

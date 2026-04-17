@@ -61,7 +61,7 @@ theme_ie <- function(base_size = 12) {
 #------------------------------------------------------------------------------
 # Load city configuration
 #------------------------------------------------------------------------------
-source("config.R")
+source("legacy/config.R")
 
 proj_years   <- (cohort_start_year + 1):cohort_end_year
 target_years <- c(2050, 2075, 2099)

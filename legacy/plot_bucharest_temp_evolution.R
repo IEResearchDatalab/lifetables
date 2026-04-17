@@ -48,7 +48,7 @@ theme_ie <- function(base_size = 18) {
 #------------------------------------------------------------------------------
 # Load city configuration
 #------------------------------------------------------------------------------
-source("config.R")
+source("legacy/config.R")
 
 window_size <- 365     # Rolling average window (days)
 
@@ -81,6 +81,10 @@ temp_raw <- open_dataset("data/tmeanproj.gz.parquet") |>
   collect() |>
   as.data.table()
 
+# If there are no observations, stop with a message
+if (nrow(temp_raw) == 0) {
+  stop(sprintf("No temperature data found for city code: %s", city_code))
+}
 cat(sprintf("Loaded %s observations\n", format(nrow(temp_raw), big.mark = ",")))
 
 # Get GCM column names (all columns starting with "tas_")

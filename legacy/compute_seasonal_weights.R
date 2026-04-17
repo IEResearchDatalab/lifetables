@@ -30,7 +30,7 @@ library(ungroup)     # for pclm()
 library(ggplot2)
 library(dplyr)
 
-source("config.R")
+source("legacy/config.R")
 
 # ==============================================================================
 # STEP 1: Download Eurostat weekly deaths
