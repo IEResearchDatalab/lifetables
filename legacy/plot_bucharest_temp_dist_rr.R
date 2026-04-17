@@ -54,7 +54,7 @@ theme_ie <- function(base_size = 12) {
 #------------------------------------------------------------------------------
 # Load city configuration
 #------------------------------------------------------------------------------
-source("config.R")
+source("legacy/config.R")
 
 ssp_scenario <- 2      # SSP2-4.5 (RCP4.5 equivalent)
 target_age <- "65-74"  # Age group for RR curve
