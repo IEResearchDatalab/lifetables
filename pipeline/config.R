@@ -2,50 +2,54 @@
 #
 # City Configuration
 #
-# This file defines the target city for all analyses. All pipeline scripts
-# source this file to get the city parameters.
+# Central configuration file for the climate-mortality pipeline.
+# All pipeline scripts source this file to get city-specific parameters.
 #
-# To analyse a different city, change the parameters below.
-# The URAU_CODE must match an entry in data/coefs.csv and the projected
-# temperature parquet. The NUTS3 code is used for Eurostat EUROPOP2019
-# regional mortality projections.
+# To analyse a different city, either:
+#   a) Set city_name before sourcing this file (used by run_cities.R loop)
+#   b) Uncomment the city_name line below for standalone runs
 #
 ################################################################################
 
 # ---- City identifiers ----
-#city_name <- "Bucharest"  # City name (for labeling outputs)
-# Deactivated to use "run_cities.R" loop instead
-city_name_lower <- tolower(city_name)  # Lowercase version for file paths
+# city_name <- "Bucharest"  # Uncomment for standalone runs
+city_name_lower <- tolower(city_name)
 
-# Decide city_code and nuts3_code based on city_name
-if (city_name == "Bucharest") {
-  city_code <- "RO001C"
-  nuts3_code <- "RO321"
-} else if (city_name == "Helsinki") {
-  city_code <- "FI001C"
-  nuts3_code <- "FI1B1"
-} else if (city_name == "Rome") {
-  city_code <- "IT001C"
-  nuts3_code <- "ITI43"
-} else {
-  stop("City not recognized. Please update config.R with the correct city_code and nuts3_code for the specified city_name.")
+# City-specific codes (must match config_city_codes.json)
+city_configs <- list(
+	Bucharest = list(city_code = "RO001C", nuts3_code = "RO321"),
+	Helsinki  = list(city_code = "FI001C", nuts3_code = "FI1B1"),
+	Rome      = list(city_code = "IT001C", nuts3_code = "ITI43"),
+	Vienna    = list(city_code = "AT001C", nuts3_code = "AT130"),
+	Berlin    = list(city_code = "DE001C", nuts3_code = "DE300"),
+	Tallinn   = list(city_code = "EE001C", nuts3_code = "EE001"),
+	Warsaw    = list(city_code = "PL001C", nuts3_code = "PL911")
+)
+
+if (!city_name %in% names(city_configs)) {
+	stop(sprintf("City '%s' not recognized. Available: %s",
+	             city_name, paste(names(city_configs), collapse = ", ")))
 }
 
-# ---- Output directory for figures (used by main.tex) ----
+city_code  <- city_configs[[city_name]]$city_code
+nuts3_code <- city_configs[[city_name]]$nuts3_code
+
+# ---- Output directories ----
 img_dir <- "img"
 
 # ---- Cohort parameters ----
 cohort_start_age  <- 20      # Starting age of the cohort
 cohort_start_year <- 2019    # Calendar year at cohort start
 cohort_end_year   <- 2099    # Calendar year at cohort end
+cohort_years      <- cohort_start_year:cohort_end_year
 
 # ---- Interest rate for EPV calculations ----
 interest_rate   <- 0.02      # 2% annual discount rate
 discount_factor <- 1 / (1 + interest_rate)
 
 # ---- Age groups (for RR coefficients) ----
-agebreaks    <- c(20, 45, 65, 75, 85, Inf)
-agelabs      <- c("20-44", "45-64", "65-74", "75-84", "85+")
+agebreaks     <- c(20, 45, 65, 75, 85, Inf)
+agelabs       <- c("20-44", "45-64", "65-74", "75-84", "85+")
 age_midpoints <- c(32.5, 55, 70, 80, 92.5)
 
 # ---- Exposure-response function specification ----
@@ -63,7 +67,6 @@ rcp_labels <- c("1" = "RCP 2.6", "2" = "RCP 4.5", "3" = "RCP 7.0")
 # ---- RR component for mortality multiplier ----
 # "total"  = full temperature-mortality curve (heat + cold effects)
 # "heat"   = heat-only: RR kept for days > MMT, set to 1 for cold days
-#            (isolates climate-change-driven heat risk; removes cold offset)
 # "cold"   = cold-only: RR kept for days <= MMT, set to 1 for heat days
 rr_component <- "total"
 
@@ -75,14 +78,11 @@ adaptation_labels <- c("0%", "50%", "90%")
 t0_adapt <- 2020
 tf_adapt <- 2100
 
-# ---- Historical reference period (for RR coefficient derivation) ----
+# ---- Historical reference period ----
 histrange       <- c(2000, 2014)
 hist_ref_period <- 2000:2014
 
-# ---- Baseline temperature period (for mortality multiplier normalization) ----
-# Uses GCM climatological average over this period as the reference RR.
-# A 30-year average (WMO climate normal) is more robust than a single year.
-# Years 1981-2014 come from ssp=="hist", years 2015+ from early projections.
+# ---- Baseline temperature period ----
 baseline_temp_period <- 1990:2019
 baseline_temp_label  <- "1990-2019"
 
@@ -92,10 +92,7 @@ predper <- c(seq(0, 1, 0.1), 2:98, seq(99, 100, 0.1))
 # ---- Radix for life tables ----
 radix <- 100000
 
-# ---- Derived file paths (based on city_name) ----
-city_name_lower <- tolower(city_name)
-
-# Ensure output directory exists
+# ---- Ensure output directories exist ----
 if (!dir.exists(img_dir)) dir.create(img_dir, recursive = TRUE)
 if (!dir.exists("results_csv")) dir.create("results_csv", recursive = TRUE)
 
