@@ -17,19 +17,17 @@
 # Deactivated to use "run_cities.R" loop instead
 city_name_lower <- tolower(city_name)  # Lowercase version for file paths
 
-# Decide city_code and nuts3_code based on city_name
-if (city_name == "Bucharest") {
-  city_code <- "RO001C"
-  nuts3_code <- "RO321"
-} else if (city_name == "Helsinki") {
-  city_code <- "FI001C"
-  nuts3_code <- "FI1B1"
-} else if (city_name == "Rome") {
-  city_code <- "IT001C"
-  nuts3_code <- "ITI43"
-} else {
-  stop("City not recognized. Please update config.R with the correct city_code and nuts3_code for the specified city_name.")
+# City-specific codes loaded from JSON
+library(jsonlite)
+city_configs <- fromJSON("config_city_codes.json")
+
+if (!city_name %in% names(city_configs)) {
+	stop(sprintf("City '%s' not recognized. Available: %s",
+	             city_name, paste(names(city_configs), collapse = ", ")))
 }
+
+city_code  <- city_configs[[city_name]]$city_code
+nuts3_code <- city_configs[[city_name]]$nuts3_code
 
 # ---- Output directory for figures (used by main.tex) ----
 img_dir <- "img"

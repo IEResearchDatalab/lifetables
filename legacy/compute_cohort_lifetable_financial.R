@@ -29,7 +29,7 @@ library(splines)
 #------------------------------------------------------------------------------
 # Load city configuration
 #------------------------------------------------------------------------------
-source("config.R")
+source("legacy/config.R")
 
 #------------------------------------------------------------------------------
 # Helper Functions
@@ -329,7 +329,7 @@ cat("\nStep 10: Loading Eurostat projected mortality data...\n")
 
 # Load Eurostat EUROPOP2019 regional projections for target
 # This provides year-specific qx with built-in mortality improvement assumptions
-mort_proj <- fread(sprintf("data/%s_mortality_projections.csv", city_name_lower))
+mort_proj <- fread(sprintf("results_csv/mortality_projections_%s.csv", city_name_lower))
 
 # Filter for ages 20+ (cohort starts at age 20)
 mort_proj <- mort_proj[age >= 20]
