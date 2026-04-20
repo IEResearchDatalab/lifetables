@@ -42,6 +42,7 @@ font_add("Montserrat",
          italic     = "fonts/Montserrat-Italic.ttf",
          bolditalic = "fonts/Montserrat-BoldItalic.ttf")
 showtext_auto()
+showtext_opts(dpi = 300)
 
 OceanBlue    <- "#000066"
 ElectricBlue <- "#0000db"
@@ -92,7 +93,8 @@ save_fig <- function(p, name, width = 10, height = 7) {
   path_pdf <- file.path("plots", paste0(name, ".pdf"))
   path_png <- file.path("plots", paste0(name, ".png"))
   ggsave(path_pdf, p, width = width, height = height, device = cairo_pdf)
-  ggsave(path_png, p, width = width, height = height, dpi = 300)
+  ggsave(path_png, p, width = width, height = height, dpi = 300,
+         device = grDevices::png, type = "cairo")
   cat(sprintf("  Saved: %s (.pdf + .png)\n", name))
   invisible(p)
 }
