@@ -272,7 +272,15 @@ p_erf <- ggplot(erf_long, aes(x = temp, y = rr, colour = agegroup)) +
              linetype = "dashed", linewidth = 0.45, colour = "#666666") +
   geom_hline(yintercept = 1, linewidth = 0.3, colour = "#aaaaaa") +
   scale_colour_manual(values = age_palette, name = "Age group") +
-  scale_x_continuous(limits = erf_xlim, labels = label_number(accuracy = 1)) +
+  scale_x_continuous(
+    limits = erf_xlim,
+    breaks = seq(
+      floor(erf_xlim[1] / 10) * 10,
+      ceiling(erf_xlim[2] / 10) * 10,
+      by = 10
+    ),
+    labels = label_number(accuracy = 1)
+  ) +
   scale_y_continuous(
     labels = label_number(accuracy = 0.01),
     limits = erf_ylim
@@ -392,15 +400,22 @@ p_erf_ext <- ggplot(erf_extrap,
     labels = c(observed = "Within historical range",
                extrapolated = "Extrapolated (linear)")
   ) +
-  scale_x_continuous(limits = extrap_xlim,
-                     labels = label_number(accuracy = 1)) +
+  scale_x_continuous(
+    limits = extrap_xlim,
+    breaks = seq(
+      floor(extrap_xlim[1] / 10) * 10,
+      ceiling(extrap_xlim[2] / 10) * 10,
+      by = 10
+    ),
+    labels = label_number(accuracy = 1)
+  ) +
   scale_y_continuous(labels = label_number(accuracy = 0.01)) +
   coord_cartesian(ylim = c(1, rr_cap)) +
   facet_wrap(~country_name, ncol = 3, axes = "all") +
   labs(
     title    = "Temperature-mortality risk extends beyond historical climate bounds",
     subtitle = sprintf(
-      "ERF with linear extrapolation beyond each country's historical temperature range.\nDotted lines = extrapolated; RR capped at %.0f for readability. Dashed line = MMT.", rr_cap
+      "ERF with linear extrapolation beyond each country's historical temperature range.\nDotted lines = extrapolated; y-axis shown up to RR = %.0f for readability. Dashed line = MMT.", rr_cap
     ),
     x       = "Daily mean temperature (\u00b0C)",
     y       = "Relative risk (RR)",
