@@ -185,7 +185,10 @@ make_map <- function(yr) {
     geom_sf(aes(fill = multiplier), color = "white", linewidth = 0.25) +
     shadowtext::geom_shadowtext(
       data          = map_labels,
-      aes(geometry  = geometry, label = sprintf("%.2f", multiplier)),
+      aes(geometry  = geometry,
+          label = ifelse(multiplier >= 1,
+                         sprintf("+%.0f%%", (multiplier - 1) * 100),
+                         sprintf("-%.0f%%", (1 - multiplier) * 100))),
       stat          = "sf_coordinates",
       size          = 2.4,
       colour        = "white",
@@ -208,7 +211,7 @@ make_map <- function(yr) {
         title.position = "top", title.hjust = 0.5
       )
     ) +
-    coord_sf(xlim = c(-12, 40), ylim = c(34, 71), expand = FALSE) +
+    coord_sf(crs = sf::st_crs(3035), xlim = c(2.5e6, 7.5e6), ylim = c(1.2e6, 5.5e6), expand = FALSE) +
     labs(
       title    = "Southern and Eastern Europe face the steepest rise in heat mortality",
       subtitle = sprintf(
