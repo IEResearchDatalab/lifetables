@@ -175,7 +175,6 @@ make_map <- function(yr) {
   cntr_map <- merge(cntr_sf, map_data,
                     by.x = "_code", by.y = "country_code",
                     all.x = TRUE)
-  cntr_map <- st_crop(cntr_map, xmin = -25, xmax = 45, ymin = 32, ymax = 72)
 
   map_labels <- suppressWarnings(
     st_centroid(cntr_map[!is.na(cntr_map$multiplier), ])
@@ -203,7 +202,7 @@ make_map <- function(yr) {
       high     = "#b2182b",
       midpoint = 1,
       limits   = c(1 - map_limit_global, 1 + map_limit_global),
-      na.value = "black",
+      na.value = "grey80",
       name     = "Mortality\nmultiplier",
       labels   = label_number(accuracy = 0.01),
       guide    = guide_colorbar(
