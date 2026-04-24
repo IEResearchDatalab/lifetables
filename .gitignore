@@ -16,6 +16,7 @@ appendices/
 .venv/
 .vscode/
 *.zip
+results_csv/
 
 # LaTeX build artifacts
 *.aux
@@ -76,3 +77,6 @@ vignettes/*.pdf
 .Renviron
 
 cordex_data/
+
+# This folder contains data for copilot
+context/

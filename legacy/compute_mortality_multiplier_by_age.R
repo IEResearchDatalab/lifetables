@@ -55,7 +55,7 @@ theme_ie <- function(base_size = 12) {
 #------------------------------------------------------------------------------
 # Load city configuration
 #------------------------------------------------------------------------------
-source("config.R")
+source("legacy/config.R")
 
 
 # Target years for comparison
@@ -209,6 +209,11 @@ varbound <- range(hist_temps, na.rm = TRUE)
 argvar <- list(fun = varfun, degree = vardegree, knots = varknots, Bound = varbound)
 
 cat(sprintf("Historical temperature range: %.1f°C to %.1f°C\n", varbound[1], varbound[2]))
+
+# Store argvar for later use, as a json file
+argvar_path <- file.path("results_csv", sprintf("argvar_%s.json", city_name_lower))
+jsonlite::write_json(argvar, argvar_path, pretty = TRUE, auto_unbox = TRUE)
+cat(sprintf("  Saved basis function parameters to: %s\n", argvar_path))
 
 #------------------------------------------------------------------------------
 # Step 4: Compute RR curves for each age group and find MMT

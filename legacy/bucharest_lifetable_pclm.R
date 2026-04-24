@@ -22,7 +22,7 @@ library(ungroup)
 `%+%` <- function(a, b) paste0(a, b)
 
 # Load city configuration
-source("config.R")
+source("legacy/config.R")
 
 # ==============================================================================
 # STEP 0: Load Bucharest Data

@@ -1,0 +1,9 @@
+{
+  "Bucharest": {"city_code": "RO001C", "nuts3_code": "RO321"},
+  "Helsinki": {"city_code": "FI001C", "nuts3_code": "FI1B1"},
+  "Rome": {"city_code": "IT001C", "nuts3_code": "ITI43"},
+  "Vienna": {"city_code": "AT001C", "nuts3_code": "AT130"},
+  "Berlin": {"city_code": "DE001C", "nuts3_code": "DE300"},
+  "Tallinn": {"city_code": "EE001C", "nuts3_code": "EE001"},
+  "Warsaw": {"city_code": "PL001C", "nuts3_code": "PL911"}
+}
