@@ -65,7 +65,7 @@ age_midpoints <- c(32.5, 55, 70, 80, 92.5)
 age_range     <- 20:100
 
 baseline_years  <- 1990:2019
-focus_ssp       <- "2"        # SSP2-4.5
+focus_ssp       <- "3"        # SSP3-7.0
 focus_year      <- 2050
 focus_agegroup  <- "65-74"
 components      <- c("heat", "cold", "total")
