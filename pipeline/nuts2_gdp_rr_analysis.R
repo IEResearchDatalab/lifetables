@@ -357,6 +357,13 @@ make_gdp_label <- function(nuts_level) {
   )
 }
 
+# ── Data sources (used in plot captions) ─────────────────────────────────────
+src_era5  <- "Temperature: ERA5 reanalysis, Copernicus Climate Change Service (https://cds.climate.copernicus.eu/)"
+src_gdp   <- "GDP: Eurostat nama_10r_2gdp / nama_10r_3gdp, PPS per inhabitant (https://ec.europa.eu/eurostat)"
+src_proj  <- "Projections: CORDEX-EUR-11 GCM ensemble via ESGF (https://esgf-node.llnl.gov/)"
+src_coefs <- "Mortality dose-response: Masselot et al. (2023) Lancet Planet Health, doi:10.1016/S2542-5196(22)00069-2"
+src_bound <- "Boundaries: Eurostat GISCO (https://ec.europa.eu/eurostat/web/gisco)"
+
 # ── CLUSTER DIAGNOSTIC PLOTS ──────────────────────────────────────────────────
 
 # Load Europe background
@@ -384,32 +391,31 @@ p_map <- ggplot() +
   labs(title = "Geographic distribution of temperature clusters",
        subtitle = sprintf(
          "k-means (k=%d) on ERA5 p10/p75/p90 per city, 1990-2019", n_clusters
-       )) +
+       ),
+       caption = paste(src_era5, src_bound, sep = "\n")) +
   theme_bw(base_size = 10) +
   theme(legend.position = "right",
-        axis.title = element_blank(),
-        plot.title = element_text(face = "bold"))
+        axis.title   = element_blank(),
+        plot.title   = element_text(face = "bold"),
+        plot.caption = element_text(size = 7, colour = "grey40", hjust = 0))
 
 # B. Pairwise scatter of knot percentiles coloured by cluster
 pair_data <- feat_dt[, .(URAU_CODE, p10, p75, p90, cluster)]
 
-p_p10_p75 <- ggplot(pair_data, aes(p10, p75, colour = cluster)) +
-  geom_point(size = 1.5, alpha = 0.7) +
-  scale_colour_manual(values = cluster_colors, guide = "none") +
-  labs(x = "p10 (°C)", y = "p75 (°C)") +
-  theme_bw(base_size = 9)
+# Shared temperature range across all three knot variables
+temp_range <- range(c(pair_data$p10, pair_data$p75, pair_data$p90), na.rm = TRUE)
 
-p_p75_p90 <- ggplot(pair_data, aes(p75, p90, colour = cluster)) +
-  geom_point(size = 1.5, alpha = 0.7) +
-  scale_colour_manual(values = cluster_colors, guide = "none") +
-  labs(x = "p75 (°C)", y = "p90 (°C)") +
-  theme_bw(base_size = 9)
+pair_scale <- function(xvar, yvar, xl, yl)
+  ggplot(pair_data, aes(.data[[xvar]], .data[[yvar]], colour = cluster)) +
+    geom_point(size = 1.5, alpha = 0.7) +
+    scale_colour_manual(values = cluster_colors, guide = "none") +
+    scale_x_continuous(name = xl, limits = temp_range) +
+    scale_y_continuous(name = yl, limits = temp_range) +
+    theme_bw(base_size = 9)
 
-p_p10_p90 <- ggplot(pair_data, aes(p10, p90, colour = cluster)) +
-  geom_point(size = 1.5, alpha = 0.7) +
-  scale_colour_manual(values = cluster_colors, guide = "none") +
-  labs(x = "p10 (°C)", y = "p90 (°C)") +
-  theme_bw(base_size = 9)
+p_p10_p75 <- pair_scale("p10", "p75", "p10 (°C)", "p75 (°C)")
+p_p75_p90 <- pair_scale("p75", "p90", "p75 (°C)", "p90 (°C)")
+p_p10_p90 <- pair_scale("p10", "p90", "p10 (°C)", "p90 (°C)")
 
 # Add shared colour legend via a dummy plot
 dummy_leg <- ggplot(pair_data, aes(p10, p75, colour = cluster)) +
@@ -425,9 +431,12 @@ leg <- cowplot::get_legend(dummy_leg)
 
 p_pairs <- (p_p10_p75 | p_p75_p90 | p_p10_p90) +
   plot_annotation(
-    title = "Pairwise scatter of ERA5 knot percentiles by cluster",
+    title   = "Pairwise scatter of ERA5 knot percentiles by cluster",
     subtitle = "Axes = daily temperature percentiles (1990-2019)",
-    theme = theme(plot.title = element_text(face = "bold", size = 11))
+    caption  = src_era5,
+    theme    = theme(plot.title   = element_text(face = "bold", size = 11),
+                     plot.caption = element_text(size = 7, colour = "grey40",
+                                                 hjust = 0))
   )
 
 # C. Boxplots of each knot percentile per cluster
@@ -442,14 +451,16 @@ box_long[, percentile := factor(percentile, levels = c("p10", "p75", "p90"),
 p_box <- ggplot(box_long, aes(cluster, temp_C, fill = cluster)) +
   geom_boxplot(outlier.size = 0.6, alpha = 0.8) +
   scale_fill_manual(values = cluster_colors, guide = "none") +
-  facet_wrap(~percentile, scales = "free_y") +
+  facet_wrap(~percentile, scales = "fixed") +
   labs(x = "Cluster (C1 = coldest → C4 = warmest)",
        y = "Temperature (°C)",
-       title = "Knot percentile distributions per cluster",
-       subtitle = "ERA5 1990-2019 historical series; each point = one city") +
+       title    = "Knot percentile distributions per cluster",
+       subtitle = "ERA5 1990-2019 historical series; each point = one city",
+       caption  = src_era5) +
   theme_bw(base_size = 10) +
   theme(strip.background = element_rect(fill = "grey92"),
-        plot.title = element_text(face = "bold"))
+        plot.title   = element_text(face = "bold"),
+        plot.caption = element_text(size = 7, colour = "grey40", hjust = 0))
 
 # D. Elbow plot
 p_elbow <- ggplot(elbow_df, aes(k, wss)) +
@@ -461,8 +472,10 @@ p_elbow <- ggplot(elbow_df, aes(k, wss)) +
            hjust = 0, colour = "firebrick", size = 3.5) +
   scale_x_continuous(breaks = 2:10) +
   labs(x = "k", y = "Total within-cluster SS",
-       title = "Elbow plot — k-means on city ERA5 knots (p10, p75, p90)") +
-  theme_bw(base_size = 10)
+       title   = "Elbow plot — k-means on city ERA5 knots (p10, p75, p90)",
+       caption = src_era5) +
+  theme_bw(base_size = 10) +
+  theme(plot.caption = element_text(size = 7, colour = "grey40", hjust = 0))
 
 # ── GDP vs MULTIPLIER SCATTER PLOTS ───────────────────────────────────────────
 
@@ -475,12 +488,11 @@ make_scatter_pages <- function(plot_dt, nuts_level, comp) {
   y_lab <- sprintf("%s-mortality multiplier\n(SSP%s %d vs 1990-2019 ERA5, age %s)",
                    tools::toTitleCase(comp),
                    ssp_labels[focus_ssp], focus_year, focus_agegroup)
-  caption_txt <- paste0(
-    "Multiplier = mean RR(", focus_year, ", ", ssp_labels[focus_ssp], ") / ",
-    "mean RR(1990-2019 ERA5 baseline)\n",
-    "GDP: Eurostat ", gdp_unit, " ", gdp_ref_year, ". ",
-    "PPS_EU27_2020_HAB: GDP per inhabitant in Purchasing Power Standard, ",
-    "EU27 2020 = 100."
+  caption_txt <- paste(
+    paste0("Multiplier = mean RR(", focus_year, ", ", ssp_labels[focus_ssp],
+           ") / mean RR(1990-2019 ERA5 baseline)"),
+    src_era5, src_proj, src_gdp, src_coefs,
+    sep = "\n"
   )
 
   y_range <- range(sub_dt$multiplier, na.rm = TRUE)
@@ -509,7 +521,7 @@ make_scatter_pages <- function(plot_dt, nuts_level, comp) {
     theme_bw(base_size = 11) +
     theme(plot.title    = element_text(face = "bold", size = 11),
           plot.subtitle = element_text(size = 8, colour = "grey40"),
-          plot.caption  = element_text(size = 7, colour = "grey40"))
+          plot.caption  = element_text(size = 7, colour = "grey40", hjust = 0))
 
   # Plot B: faceted by cluster — FIXED y-scale across panels
   p_facet <- ggplot(sub_dt, aes(gdp_pps, multiplier,
@@ -531,35 +543,52 @@ make_scatter_pages <- function(plot_dt, nuts_level, comp) {
     theme_bw(base_size = 10) +
     theme(strip.background = element_rect(fill = "grey92"),
           plot.title   = element_text(face = "bold"),
-          plot.caption = element_text(size = 7, colour = "grey40"))
+          plot.caption = element_text(size = 7, colour = "grey40", hjust = 0))
 
   list(all = p_all, facet = p_facet)
 }
 
-# ── Assemble PDF ──────────────────────────────────────────────────────────────
+# ── Collect all plots with names ──────────────────────────────────────────────
+
+all_plots <- list(
+  cluster_map        = p_map,
+  cluster_knot_pairs = p_pairs,
+  cluster_knot_boxes = p_box,
+  cluster_elbow      = p_elbow
+)
+
+for (comp in components) {
+  pg2 <- make_scatter_pages(plot_nuts2, "NUTS2", comp)
+  pg3 <- make_scatter_pages(plot_nuts3, "NUTS3", comp)
+  if (!is.null(pg2)) {
+    all_plots[[paste0("nuts2_", comp, "_all")]]   <- pg2$all
+    all_plots[[paste0("nuts2_", comp, "_facet")]] <- pg2$facet
+  }
+  if (!is.null(pg3)) {
+    all_plots[[paste0("nuts3_", comp, "_all")]]   <- pg3$all
+    all_plots[[paste0("nuts3_", comp, "_facet")]] <- pg3$facet
+  }
+}
+
+# ── Save PDF ──────────────────────────────────────────────────────────────────
 
 out_pdf <- "plots/nuts_gdp_vs_multiplier.pdf"
 pdf(out_pdf, width = 14, height = 9)
-
-# Section 1: Cluster diagnostics
-print(p_map)
-print(p_pairs)
-print(p_box)
-print(p_elbow)
-
-# Section 2: GDP vs multiplier — NUTS2, each component
-for (comp in components) {
-  pg <- make_scatter_pages(plot_nuts2, "NUTS2", comp)
-  if (!is.null(pg)) { print(pg$all); print(pg$facet) }
-}
-
-# Section 3: GDP vs multiplier — NUTS3, each component
-for (comp in components) {
-  pg <- make_scatter_pages(plot_nuts3, "NUTS3", comp)
-  if (!is.null(pg)) { print(pg$all); print(pg$facet) }
-}
-
+for (p in all_plots) print(p)
 dev.off()
 cat(sprintf("  Saved: %s\n", out_pdf))
+
+# ── Save individual PNGs (300 dpi, publication quality) ───────────────────────
+
+png_dir <- "plots/nuts_gdp_vs_multiplier_png"
+if (!dir.exists(png_dir)) dir.create(png_dir)
+
+for (nm in names(all_plots)) {
+  out_png <- file.path(png_dir, paste0(nm, ".png"))
+  ggsave(out_png, plot = all_plots[[nm]],
+         width = 14, height = 9, units = "in",
+         dpi = 300, device = "png", bg = "white")
+}
+cat(sprintf("  Saved %d PNGs to: %s/\n", length(all_plots), png_dir))
 
 cat_header("Analysis complete")
