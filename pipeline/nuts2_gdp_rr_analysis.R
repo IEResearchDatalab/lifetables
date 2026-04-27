@@ -1,37 +1,39 @@
 ################################################################################
 #
-# NUTS2 GDP vs Mortality Multiplier Analysis
+# NUTS2/NUTS3 GDP vs Mortality Multiplier Analysis
 #
 # For each of the 854 NUTS3 Urban Audit cities (Masselot et al.):
-#   1. Map each city to its NUTS2 region and assign NUTS2-level GDP per
-#      inhabitant from Eurostat (nama_10r_2gdp, PPS_EU27_2020_HAB, 2019).
-#   2. Derive city-specific B-spline knots (p10, p75, p90) from the ERA5
-#      historical series (era5series.gz.parquet, 1990-2019). No projection
-#      data are needed for this step.
-#   3. Cluster cities by their knot triplet using k-means.
-#   4. Compute the mortality multiplier for each city as:
-#         multiplier = avg_RR(target year, SSP) / avg_RR(historical baseline)
-#      where avg_RR is the population-averaged RR over all days in the period,
-#      using the city's own B-spline basis (coefs.csv + ERA5 knots).
-#      All temperature data (ERA5 baseline + projections) are loaded in bulk
-#      upfront to avoid per-city I/O.
-#   5. Scatter-plot GDP per inhabitant vs mortality multiplier, coloured by
-#      temperature cluster.
+#   1. Map each city to NUTS2 and NUTS3 via spatial join against Eurostat
+#      NUTS polygons (city lat/lon from city_results.csv). The GPKG
+#      NUTS3_2021 field is NOT used — it contains errors for some cities.
+#   2. Download GDP per inhabitant at NUTS2 level (nama_10r_2gdp) and NUTS3
+#      level (nama_10r_3gdp), unit PPS_EU27_2020_HAB (EU27 average = 100).
+#   3. Derive city-specific B-spline knots (p10, p75, p90) from the ERA5
+#      historical series (1990-2019). No projection data needed for clustering.
+#   4. Cluster cities by knot triplet via k-means.
+#   5. Compute the mortality multiplier for each city as:
+#         multiplier = avg_RR(focus_year, SSP) / avg_RR(1990-2019 ERA5 baseline)
+#      computed separately for heat, cold, and total components.
+#      ERA5 and projected temperatures are loaded in bulk upfront.
+#   6. Diagnostic plots: cluster geography, knot distributions, elbow.
+#   7. Scatter plots: GDP (NUTS2 and NUTS3) vs multiplier (heat/cold/total),
+#      faceted by cluster with fixed y-scale across panels.
 #
 # Inputs:
-#   data/urban_audit_cities_2020.gpkg   city → NUTS3 code
 #   data/city_results.csv               city coordinates, population
 #   data/coefs.csv                      B-spline coefficients (Masselot 2023)
 #   data/era5series.gz.parquet          daily ERA5 temperatures 1990-2019
-#   data/tmeanproj.gz.parquet           CMIP6 daily projections 1990-2099
+#   data/tmeanproj.gz.parquet           CMIP6 daily projections
+#   data/CNTR_RG_20M_2020_4326.geojson  country boundaries for map background
 #
 # Outputs:
-#   results_csv/nuts2_city_map.csv
+#   results_csv/nuts_city_map.csv
 #   results_csv/nuts2_gdp.csv
+#   results_csv/nuts3_gdp.csv
 #   results_csv/city_knots.csv
 #   results_csv/city_clusters.csv
 #   results_csv/city_multipliers.csv
-#   plots/nuts2_gdp_vs_multiplier.pdf
+#   plots/nuts_gdp_vs_multiplier.pdf
 #
 ################################################################################
 
@@ -45,6 +47,7 @@ suppressPackageStartupMessages({
   library(splines)
   library(ggplot2)
   library(ggrepel)
+  library(patchwork)
 })
 
 source("R/utils.R")
@@ -62,23 +65,26 @@ age_midpoints <- c(32.5, 55, 70, 80, 92.5)
 age_range     <- 20:100
 
 baseline_years  <- 1990:2019
-focus_ssp       <- "2"       # SSP2-4.5
+focus_ssp       <- "2"        # SSP2-4.5
 focus_year      <- 2050
 focus_agegroup  <- "65-74"
-focus_comp      <- "total"   # "heat", "cold", or "total"
+components      <- c("heat", "cold", "total")
 
 gdp_ref_year    <- 2019
-gdp_unit        <- "PPS_EU27_2020_HAB"
+gdp_unit        <- "PPS_EU27_2020_HAB"  # GDP/inhabitant, EU27 2020 = 100
 
 n_clusters      <- 4
 
 if (!dir.exists("results_csv")) dir.create("results_csv")
 if (!dir.exists("plots"))       dir.create("plots")
 
-# ── Step 1: City → NUTS2 mapping ─────────────────────────────────────────────
+ssp_labels <- c("1" = "SSP1-2.6", "2" = "SSP2-4.5", "3" = "SSP3-7.0",
+                "hist" = "Historical")
 
-cat_header("NUTS2 GDP vs Mortality Multiplier Analysis")
-cat_step(1, "Mapping cities to NUTS2")
+# ── Step 1: NUTS2 and NUTS3 mapping via spatial join ─────────────────────────
+
+cat_header("NUTS2/NUTS3 GDP vs Mortality Multiplier Analysis")
+cat_step(1, "Mapping cities to NUTS2 and NUTS3 via spatial join")
 
 coefs_all    <- fread("data/coefs.csv")
 city_results <- fread("data/city_results.csv")
@@ -87,66 +93,82 @@ city_meta    <- unique(city_results[, .(URAU_CODE, LABEL, CNTR_CODE, lon, lat, p
 all_city_codes <- unique(coefs_all$URAU_CODE)
 cat(sprintf("  %d cities with coefficients\n", length(all_city_codes)))
 
-# Primary: NUTS3_2021 from Urban Audit GPKG, truncated to 4 chars = NUTS2
-ua <- st_read("data/urban_audit_cities_2020.gpkg", quiet = TRUE)
-ua_dt <- as.data.table(st_drop_geometry(ua))[, .(URAU_CODE, NUTS3_2021)]
-ua_dt[, URAU_CODE_short := sub("(C)[0-9]+$", "\\1", URAU_CODE)]
-ua_dt[, nuts2 := substr(NUTS3_2021, 1, 4)]
-ua_map <- ua_dt[!is.na(NUTS3_2021) & nchar(NUTS3_2021) >= 4,
-                .(URAU_CODE = URAU_CODE_short, nuts2)]
+# Spatial join: city points → NUTS2 / NUTS3 polygons (Eurostat, 2021)
+# This is the authoritative mapping — the GPKG NUTS3_2021 field has known errors.
+cat("  Downloading NUTS polygons from Eurostat...\n")
+nuts2_sf <- get_eurostat_geospatial(resolution = "20", nuts_level = 2,
+                                    year = 2021, make_valid = TRUE)
+nuts3_sf <- get_eurostat_geospatial(resolution = "20", nuts_level = 3,
+                                    year = 2021, make_valid = TRUE)
 
-city_nuts2 <- merge(data.table(URAU_CODE = all_city_codes),
-                    ua_map, by = "URAU_CODE", all.x = TRUE)
-n_primary <- sum(!is.na(city_nuts2$nuts2))
-cat(sprintf("  Primary mapping: %d / %d cities\n", n_primary, length(all_city_codes)))
+city_pts <- st_as_sf(city_meta[URAU_CODE %in% all_city_codes],
+                     coords = c("lon", "lat"), crs = 4326, remove = FALSE)
 
-# Fallback: spatial join with Eurostat NUTS2 shapefile
-unmatched <- city_nuts2[is.na(nuts2), URAU_CODE]
-if (length(unmatched) > 0) {
-  cat(sprintf("  Spatial-join fallback for %d unmatched cities...\n", length(unmatched)))
-  nuts_sf <- tryCatch(
-    get_eurostat_geospatial(resolution = "20", nuts_level = 2,
-                            year = 2021, make_valid = TRUE),
-    error = function(e) { cat("    WARNING: NUTS2 shapefile unavailable\n"); NULL }
+do_nuts_join <- function(city_pts_sf, nuts_sf, id_col = "nuts2") {
+  joined <- st_join(
+    st_transform(city_pts_sf, st_crs(nuts_sf)),
+    nuts_sf[, "NUTS_ID"],
+    join = st_within
   )
-  if (!is.null(nuts_sf)) {
-    pts <- st_as_sf(city_meta[URAU_CODE %in% unmatched],
-                    coords = c("lon", "lat"), crs = 4326)
-    joined <- st_join(pts, st_transform(nuts_sf[, "NUTS_ID"], 4326),
-                      join = st_within)
-    jdt <- as.data.table(st_drop_geometry(joined))[!is.na(NUTS_ID),
-                                                    .(URAU_CODE, nuts2 = NUTS_ID)]
-    cat(sprintf("    Resolved %d / %d\n", nrow(jdt), length(unmatched)))
-    city_nuts2[jdt, nuts2 := i.nuts2, on = "URAU_CODE"]
+  dt <- as.data.table(st_drop_geometry(joined))[, .(URAU_CODE, nuts_id = NUTS_ID)]
+  setnames(dt, "nuts_id", id_col)
+
+  # Fallback for cities outside any polygon (border/island edge cases):
+  # use nearest polygon centroid
+  missed <- dt[is.na(get(id_col)), URAU_CODE]
+  if (length(missed) > 0) {
+    cat(sprintf("    %d cities outside polygon — using nearest centroid\n",
+                length(missed)))
+    nn <- st_nearest_feature(
+      st_transform(city_pts_sf[city_pts_sf$URAU_CODE %in% missed, ], st_crs(nuts_sf)),
+      nuts_sf
+    )
+    dt[URAU_CODE %in% missed, (id_col) := nuts_sf$NUTS_ID[nn]]
   }
+  dt
 }
-city_nuts2[is.na(nuts2), nuts2 := paste0(substr(URAU_CODE, 1, 2), "00")]
 
-cat(sprintf("  Final: %d cities in %d NUTS2 regions\n",
-            nrow(city_nuts2), uniqueN(city_nuts2$nuts2)))
-fwrite(city_nuts2, "results_csv/nuts2_city_map.csv")
+city_nuts2 <- do_nuts_join(city_pts, nuts2_sf, "nuts2")
+city_nuts3 <- do_nuts_join(city_pts, nuts3_sf, "nuts3")
+nuts_map   <- merge(city_nuts2, city_nuts3, by = "URAU_CODE")
 
-# ── Step 2: NUTS2 GDP from Eurostat ──────────────────────────────────────────
+cat(sprintf("  Mapped %d cities to %d NUTS2 and %d NUTS3 regions\n",
+            nrow(nuts_map), uniqueN(nuts_map$nuts2), uniqueN(nuts_map$nuts3)))
+fwrite(nuts_map, "results_csv/nuts_city_map.csv")
 
-cat_step(2, "Downloading NUTS2 GDP per inhabitant from Eurostat")
+# ── Step 2: GDP per inhabitant from Eurostat ──────────────────────────────────
 
-gdp_raw <- tryCatch(
-  get_eurostat("nama_10r_2gdp",
-               filters = list(unit = gdp_unit,
-                              time = as.character(gdp_ref_year)),
-               time_format = "num", cache = TRUE),
-  error = function(e) get_eurostat("nama_10r_2gdp", cache = TRUE)
-)
-gdp_dt <- as.data.table(gdp_raw)[nchar(geo) == 4]
-if ("unit" %in% names(gdp_dt))        gdp_dt <- gdp_dt[unit == gdp_unit]
-if ("time" %in% names(gdp_dt))        gdp_dt <- gdp_dt[time == gdp_ref_year]
-if ("TIME_PERIOD" %in% names(gdp_dt)) gdp_dt <- gdp_dt[TIME_PERIOD == gdp_ref_year]
-if ("value" %in% names(gdp_dt) && !"values" %in% names(gdp_dt))
-  setnames(gdp_dt, "value", "values")
-setnames(gdp_dt, c("geo", "values"), c("nuts2", "gdp_pps"), skip_absent = TRUE)
-gdp_nuts2 <- gdp_dt[, .(nuts2, gdp_pps)][!is.na(gdp_pps)]
-cat(sprintf("  %d NUTS2 regions\n", nrow(gdp_nuts2)))
+cat_step(2, "Downloading GDP per inhabitant (PPS_EU27_2020_HAB)")
+
+get_gdp <- function(dataset, nuts_level_char) {
+  raw <- tryCatch(
+    get_eurostat(dataset, cache = TRUE),
+    error = function(e) { cat(sprintf("    ERROR: %s\n", e$message)); NULL }
+  )
+  if (is.null(raw)) return(NULL)
+  dt <- as.data.table(raw)
+  setnames(dt, c("geo", "values"), c("region", "gdp_pps"), skip_absent = TRUE)
+  if ("value" %in% names(dt) && !"gdp_pps" %in% names(dt))
+    setnames(dt, "value", "gdp_pps")
+  dt <- dt[unit == gdp_unit &
+           nchar(region) == nchar(nuts_level_char) &
+           format(TIME_PERIOD, "%Y") == as.character(gdp_ref_year),
+           .(region, gdp_pps)]
+  dt <- dt[!is.na(gdp_pps)]
+  cat(sprintf("  %s: %d %s regions with GDP\n",
+              dataset, uniqueN(dt$region), nuts_level_char))
+  dt
+}
+
+gdp_nuts2_raw <- get_gdp("nama_10r_2gdp", "XXXX")   # 4-char NUTS2
+gdp_nuts3_raw <- get_gdp("nama_10r_3gdp", "XXXXX")  # 5-char NUTS3
+
+# Re-key to generic column names
+gdp_nuts2 <- gdp_nuts2_raw[nchar(region) == 4]; setnames(gdp_nuts2, "region", "nuts2")
+gdp_nuts3 <- gdp_nuts3_raw[nchar(region) == 5]; setnames(gdp_nuts3, "region", "nuts3")
+
 fwrite(gdp_nuts2, "results_csv/nuts2_gdp.csv")
+fwrite(gdp_nuts3, "results_csv/nuts3_gdp.csv")
 
 # ── Step 3: ERA5 knots (p10, p75, p90) per city ──────────────────────────────
 
@@ -163,7 +185,6 @@ knots_dt <- era5[, {
 cat(sprintf("  Knots computed for %d cities\n", nrow(knots_dt)))
 fwrite(knots_dt, "results_csv/city_knots.csv")
 
-# Keep ERA5 per-city lookup for baseline RR computation
 era5_lookup <- split(era5$era5landtmean, era5$URAU_CODE)
 rm(era5); invisible(gc())
 
@@ -176,22 +197,21 @@ feat_mat <- scale(as.matrix(feat_dt[, .(p10, p75, p90)]))
 rownames(feat_mat) <- feat_dt$URAU_CODE
 
 set.seed(42)
-wss <- sapply(2:10, function(k)
+wss_vec <- sapply(2:10, function(k)
   kmeans(feat_mat, centers = k, nstart = 25, iter.max = 100)$tot.withinss)
-elbow_df <- data.frame(k = 2:10, wss = wss)
+elbow_df <- data.frame(k = 2:10, wss = wss_vec)
 
 km <- kmeans(feat_mat, centers = n_clusters, nstart = 50, iter.max = 200)
 feat_dt[, cluster_raw := km$cluster]
 
-# Re-label clusters cold → warm by median p75
+# Re-label cold → warm by median p75 → C1 (coldest) to C4 (warmest)
 med_ord <- feat_dt[, .(med = median(p75)), by = cluster_raw]
 setorder(med_ord, med)
-med_ord[, cluster := paste0("C", seq_len(.N))]
+med_ord[, cluster := factor(paste0("C", seq_len(.N)),
+                            levels = paste0("C", 1:n_clusters))]
 feat_dt <- merge(feat_dt, med_ord[, .(cluster_raw, cluster)], by = "cluster_raw")
-feat_dt[, cluster := factor(cluster, levels = paste0("C", 1:n_clusters))]
 
-cat(sprintf("  Cluster sizes:\n"))
-print(table(feat_dt$cluster))
+cat("  Cluster sizes:\n"); print(table(feat_dt$cluster))
 fwrite(feat_dt[, .(URAU_CODE, p10, p75, p90, cluster)],
        "results_csv/city_clusters.csv")
 
@@ -199,207 +219,244 @@ fwrite(feat_dt[, .(URAU_CODE, p10, p75, p90, cluster)],
 
 cat_step(5, "Loading projected temperatures in bulk")
 
-ds_proj <- open_dataset("data/tmeanproj.gz.parquet")
+ds_proj      <- open_dataset("data/tmeanproj.gz.parquet")
 gcm_cols_all <- names(ds_proj)[grepl("^tas_", names(ds_proj))]
 gcm_cols     <- gcm_cols_all[!gsub("tas_", "", gcm_cols_all) %in% gcmexcl]
 cat(sprintf("  Using %d GCMs\n", length(gcm_cols)))
 
-# Future temperatures: target year, target SSP — all cities at once
-cat(sprintf("  Loading SSP%s year %d for all cities...\n", focus_ssp, focus_year))
+cat(sprintf("  Loading SSP%s year %d...\n", focus_ssp, focus_year))
 proj_future <- ds_proj %>%
   filter(ssp == focus_ssp, year(date) == focus_year) %>%
   select(c("URAU_CODE", "date", all_of(gcm_cols))) %>%
   collect() %>% as.data.table()
-cat(sprintf("  Future slice: %d rows, %d cities\n",
+cat(sprintf("  Future: %d rows, %d cities\n",
             nrow(proj_future), uniqueN(proj_future$URAU_CODE)))
 
-# Build per-city future temperature lookup
 proj_lookup <- split(proj_future, proj_future$URAU_CODE)
 rm(proj_future); invisible(gc())
 
-# ── Step 6: Compute mortality multiplier per city ────────────────────────────
+# ── Step 6: Compute mortality multipliers per city (all components) ───────────
 
-cat_step(6, "Computing mortality multipliers for all cities")
+cat_step(6, "Computing mortality multipliers for all cities and components")
 
 results_list <- vector("list", length(all_city_codes))
 
 for (ci in seq_along(all_city_codes)) {
   city <- all_city_codes[ci]
 
-  # Knots and temperature bounds from ERA5
-  krow <- knots_dt[URAU_CODE == city]
-  if (nrow(krow) == 0L) next
-
+  krow       <- knots_dt[URAU_CODE == city]
   era5_temps <- era5_lookup[[city]]
-  if (is.null(era5_temps) || length(era5_temps) < 50) next
+  coefs_city <- coefs_all[URAU_CODE == city]
+  fut_rows   <- proj_lookup[[city]]
 
-  # Build basis using city-specific ERA5 knots
-  city_knots  <- c(krow$p10, krow$p75, krow$p90)
-  city_bound  <- range(era5_temps, na.rm = TRUE)
+  if (nrow(krow) == 0L || is.null(era5_temps) || length(era5_temps) < 50 ||
+      nrow(coefs_city) == 0L || is.null(fut_rows) || nrow(fut_rows) == 0L) next
+
+  city_knots <- c(krow$p10, krow$p75, krow$p90)
+  city_bound <- range(era5_temps, na.rm = TRUE)
   argvar <- list(fun = varfun, degree = vardegree,
                  knots = city_knots, Bound = city_bound)
 
-  # Coefficients for this city
-  coefs_city <- coefs_all[URAU_CODE == city]
-  if (nrow(coefs_city) == 0L) next
-
-  # Build RR curves on ERA5 temperature grid
-  tryCatch({
-    rr_res <- compute_rr_curves(coefs_city, agelabs, age_midpoints,
-                                argvar, city_bound)
-  }, error = function(e) {
-    cat(sprintf("  [%d] %s: RR error: %s\n", ci, city, e$message))
-    return(NULL)
-  })
+  rr_res <- tryCatch(
+    compute_rr_curves(coefs_city, agelabs, age_midpoints, argvar, city_bound),
+    error = function(e) NULL
+  )
   if (is.null(rr_res)) next
 
   rr_interp <- interpolate_rr_to_single_age(
     rr_res$rr_matrix, rr_res$mmt_vec, age_midpoints, age_range
   )
 
-  # Baseline avg RR from ERA5 historical temperatures
-  baseline_rr <- compute_avg_rr_by_age(
-    era5_temps, rr_res$temp_seq,
-    rr_interp$rr_single_age, rr_interp$mmt_single_age,
-    age_range, component = focus_comp
-  )
-
-  # Future avg RR from projected temperatures
-  fut_rows <- proj_lookup[[city]]
-  if (is.null(fut_rows) || nrow(fut_rows) == 0L) next
-
   fut_temps <- unlist(fut_rows[, ..gcm_cols], use.names = FALSE)
   fut_temps <- fut_temps[!is.na(fut_temps)]
   if (length(fut_temps) < 50) next
 
-  future_rr <- compute_avg_rr_by_age(
-    fut_temps, rr_res$temp_seq,
-    rr_interp$rr_single_age, rr_interp$mmt_single_age,
-    age_range, component = focus_comp
-  )
+  city_rows <- lapply(components, function(comp) {
+    base_rr <- compute_avg_rr_by_age(
+      era5_temps, rr_res$temp_seq,
+      rr_interp$rr_single_age, rr_interp$mmt_single_age,
+      age_range, component = comp
+    )
+    fut_rr <- compute_avg_rr_by_age(
+      fut_temps, rr_res$temp_seq,
+      rr_interp$rr_single_age, rr_interp$mmt_single_age,
+      age_range, component = comp
+    )
+    data.table(
+      URAU_CODE   = city,
+      component   = comp,
+      age         = age_range,
+      baseline_rr = base_rr,
+      future_rr   = fut_rr,
+      multiplier  = fut_rr / base_rr
+    )
+  })
+  results_list[[ci]] <- rbindlist(city_rows)
 
-  multiplier <- future_rr / baseline_rr
-
-  results_list[[ci]] <- data.table(
-    URAU_CODE  = city,
-    age        = age_range,
-    avg_rr     = future_rr,
-    baseline_rr = baseline_rr,
-    multiplier = multiplier
-  )
-
-  if (ci %% 50 == 0)
-    cat(sprintf("  [%d/%d] %s done\n", ci, length(all_city_codes), city))
+  if (ci %% 100 == 0)
+    cat(sprintf("  [%d/%d] done\n", ci, length(all_city_codes)))
 }
 
 city_multipliers <- rbindlist(results_list)
-cat(sprintf("  Multipliers computed for %d cities\n",
+cat(sprintf("  Multipliers for %d cities\n",
             uniqueN(city_multipliers$URAU_CODE)))
 fwrite(city_multipliers, "results_csv/city_multipliers.csv")
-cat("  Saved: results_csv/city_multipliers.csv\n")
 
-# ── Step 7: Assemble plot dataset ─────────────────────────────────────────────
+# ── Step 7: Assemble plot datasets ────────────────────────────────────────────
 
-cat_step(7, "Assembling plot dataset")
+cat_step(7, "Assembling plot datasets")
 
-# Mean multiplier over focus age group
-focus_ages <- age_range[age_range >= as.integer(strsplit(focus_agegroup, "-")[[1]][1]) &
-                        age_range <= as.integer(strsplit(focus_agegroup, "-")[[1]][2])]
-multi_focus <- city_multipliers[age %in% focus_ages,
-                                 .(multiplier = mean(multiplier, na.rm = TRUE)),
-                                 by = URAU_CODE]
+age_lo <- as.integer(strsplit(focus_agegroup, "-")[[1]][1])
+age_hi <- as.integer(strsplit(focus_agegroup, "-")[[1]][2])
+focus_ages <- age_range[age_range >= age_lo & age_range <= age_hi]
 
-plot_dt <- Reduce(
-  function(x, y) merge(x, y, by = "URAU_CODE", all = FALSE),
-  list(
-    multi_focus,
-    city_nuts2[, .(URAU_CODE, nuts2)],
-    feat_dt[, .(URAU_CODE, p10, p75, p90, cluster)],
-    city_meta[, .(URAU_CODE, LABEL, CNTR_CODE)]
+multi_city <- city_multipliers[age %in% focus_ages,
+                               .(multiplier = mean(multiplier, na.rm = TRUE)),
+                               by = .(URAU_CODE, component)]
+
+make_plot_dt <- function(gdp_col_name, gdp_table, by_col) {
+  base <- merge(multi_city,
+                nuts_map[, c("URAU_CODE", by_col), with = FALSE],
+                by = "URAU_CODE")
+  base <- merge(base,
+                feat_dt[, .(URAU_CODE, p10, p75, p90, cluster)],
+                by = "URAU_CODE")
+  base <- merge(base, city_meta[, .(URAU_CODE, LABEL, CNTR_CODE)],
+                by = "URAU_CODE")
+  gdp_tmp <- copy(gdp_table)
+  setnames(gdp_tmp, c(by_col, "gdp_pps"))
+  base <- merge(base, gdp_tmp, by = by_col, all.x = TRUE)
+  base[!is.na(gdp_pps) & !is.na(multiplier)]
+}
+
+plot_nuts2 <- make_plot_dt("nuts2", gdp_nuts2, "nuts2")
+plot_nuts3 <- make_plot_dt("nuts3", gdp_nuts3, "nuts3")
+
+cat(sprintf("  NUTS2: %d cities; NUTS3: %d cities with complete data\n",
+            uniqueN(plot_nuts2$URAU_CODE), uniqueN(plot_nuts3$URAU_CODE)))
+
+# ── Step 8: Plotting helpers ──────────────────────────────────────────────────
+
+cat_step(8, "Generating plots")
+
+cluster_colors <- c(C1 = "#2166AC", C2 = "#92C5DE", C3 = "#F4A582", C4 = "#D6604D")
+
+clust_labels_fn <- function(dt) {
+  meta <- dt[, .(med_p75 = median(p75), n = .N), by = cluster]
+  setorder(meta, cluster)
+  setNames(
+    sprintf("%s  (median T75 = %.1f°C, n = %d)", meta$cluster, meta$med_p75, meta$n),
+    as.character(meta$cluster)
   )
-)
-plot_dt <- merge(plot_dt, gdp_nuts2, by = "nuts2", all.x = TRUE)
-plot_dt <- plot_dt[!is.na(gdp_pps) & !is.na(multiplier)]
-cat(sprintf("  %d cities with complete data\n", nrow(plot_dt)))
+}
 
-# ── Step 8: Scatter plots ─────────────────────────────────────────────────────
+make_gdp_label <- function(nuts_level) {
+  sprintf(
+    "GDP per inhabitant — %s level (%d)\nPPS index, EU27 2020 average = 100",
+    nuts_level, gdp_ref_year
+  )
+}
 
-cat_step(8, "Generating scatter plots")
+# ── CLUSTER DIAGNOSTIC PLOTS ──────────────────────────────────────────────────
 
-ssp_labels <- c("1" = "SSP1-2.6", "2" = "SSP2-4.5", "3" = "SSP3-7.0")
-comp_label <- tools::toTitleCase(focus_comp)
-x_lab <- sprintf("GDP per inhabitant (%d, PPS index EU27=100)", gdp_ref_year)
-y_lab <- sprintf("%s-mortality multiplier (SSP%s %d, age %s)",
-                 comp_label, ssp_labels[focus_ssp], focus_year, focus_agegroup)
-
-clust_meta <- plot_dt[, .(med_p75 = median(p75), n = .N), by = cluster]
-setorder(clust_meta, med_p75)
-clust_labels <- setNames(
-  sprintf("%s  (T75 med=%.1f°C, n=%d)", clust_meta$cluster,
-          clust_meta$med_p75, clust_meta$n),
-  as.character(clust_meta$cluster)
+# Load Europe background
+euro_sf <- tryCatch(
+  st_read("data/CNTR_RG_20M_2020_4326.geojson", quiet = TRUE),
+  error = function(e) NULL
 )
 
-cluster_colors <- setNames(
-  c("#2166AC", "#92C5DE", "#F4A582", "#D6604D")[seq_len(n_clusters)],
-  levels(plot_dt$cluster)
-)
+# A. Map of cluster assignments
+feat_geo <- merge(feat_dt[, .(URAU_CODE, cluster)],
+                  city_meta[, .(URAU_CODE, lon, lat)], by = "URAU_CODE")
 
-# Plot A: all cities
-p_all <- ggplot(plot_dt, aes(gdp_pps, multiplier,
-                              colour = cluster, label = LABEL)) +
-  geom_point(size = 1.8, alpha = 0.75) +
-  geom_smooth(aes(group = cluster), method = "lm", se = TRUE,
-              linewidth = 0.7, alpha = 0.12) +
-  geom_text_repel(size = 1.8, max.overlaps = 15,
-                  segment.colour = "grey60") +
-  scale_colour_manual(values = cluster_colors, labels = clust_labels,
-                      name = "Temperature\ncluster") +
-  scale_x_continuous(name = x_lab) +
-  scale_y_continuous(name = y_lab) +
-  labs(
-    title = "NUTS3 cities: GDP per inhabitant vs temperature-attributable mortality multiplier",
-    subtitle = sprintf(
-      "GDP at NUTS2 level. Clusters = k-means on Masselot ERA5 knots (p10/p75/p90), k=%d",
-      n_clusters),
-    caption = sprintf(
-      "Multiplier = avg RR(%d %s) / avg RR(1990-2019 ERA5 baseline). GDP: Eurostat %s %d.",
-      focus_year, ssp_labels[focus_ssp], gdp_unit, gdp_ref_year)
-  ) +
-  theme_bw(base_size = 11) +
+p_map <- ggplot() +
+  {if (!is.null(euro_sf))
+    geom_sf(data = euro_sf, fill = "grey93", colour = "grey70", linewidth = 0.2)
+  } +
+  geom_point(data = feat_geo,
+             aes(lon, lat, colour = cluster), size = 1.2, alpha = 0.8) +
+  scale_colour_manual(values = cluster_colors,
+                      labels = clust_labels_fn(
+                        merge(feat_dt, city_meta, by = "URAU_CODE")
+                      ),
+                      name = "Temperature cluster") +
+  coord_sf(xlim = c(-12, 35), ylim = c(34, 72), expand = FALSE) +
+  labs(title = "Geographic distribution of temperature clusters",
+       subtitle = sprintf(
+         "k-means (k=%d) on ERA5 p10/p75/p90 per city, 1990-2019", n_clusters
+       )) +
+  theme_bw(base_size = 10) +
   theme(legend.position = "right",
-        plot.title    = element_text(face = "bold", size = 11),
-        plot.subtitle = element_text(size = 8, colour = "grey40"))
+        axis.title = element_blank(),
+        plot.title = element_text(face = "bold"))
 
-# Plot B: faceted by cluster
-p_facet <- ggplot(plot_dt, aes(gdp_pps, multiplier,
-                                colour = cluster, label = LABEL)) +
-  geom_point(size = 1.8, alpha = 0.8) +
-  geom_smooth(method = "lm", se = TRUE,
-              linewidth = 0.8, alpha = 0.15, colour = "black") +
-  geom_text_repel(size = 1.6, max.overlaps = 10,
-                  segment.colour = "grey70") +
+# B. Pairwise scatter of knot percentiles coloured by cluster
+pair_data <- feat_dt[, .(URAU_CODE, p10, p75, p90, cluster)]
+
+p_p10_p75 <- ggplot(pair_data, aes(p10, p75, colour = cluster)) +
+  geom_point(size = 1.5, alpha = 0.7) +
   scale_colour_manual(values = cluster_colors, guide = "none") +
-  scale_x_continuous(name = x_lab) +
-  scale_y_continuous(name = y_lab) +
-  facet_wrap(~cluster, labeller = as_labeller(clust_labels),
-             scales = "free") +
-  labs(
-    title    = "GDP vs mortality multiplier by temperature cluster",
-    subtitle = "Each panel = one k-means temperature cluster; black band = OLS 95% CI"
-  ) +
+  labs(x = "p10 (°C)", y = "p75 (°C)") +
+  theme_bw(base_size = 9)
+
+p_p75_p90 <- ggplot(pair_data, aes(p75, p90, colour = cluster)) +
+  geom_point(size = 1.5, alpha = 0.7) +
+  scale_colour_manual(values = cluster_colors, guide = "none") +
+  labs(x = "p75 (°C)", y = "p90 (°C)") +
+  theme_bw(base_size = 9)
+
+p_p10_p90 <- ggplot(pair_data, aes(p10, p90, colour = cluster)) +
+  geom_point(size = 1.5, alpha = 0.7) +
+  scale_colour_manual(values = cluster_colors, guide = "none") +
+  labs(x = "p10 (°C)", y = "p90 (°C)") +
+  theme_bw(base_size = 9)
+
+# Add shared colour legend via a dummy plot
+dummy_leg <- ggplot(pair_data, aes(p10, p75, colour = cluster)) +
+  geom_point(size = 2, alpha = 0.8) +
+  scale_colour_manual(values = cluster_colors,
+                      labels = clust_labels_fn(
+                        merge(feat_dt, city_meta, by = "URAU_CODE")
+                      ),
+                      name = "Cluster") +
+  theme_void() +
+  theme(legend.position = "right")
+leg <- cowplot::get_legend(dummy_leg)
+
+p_pairs <- (p_p10_p75 | p_p75_p90 | p_p10_p90) +
+  plot_annotation(
+    title = "Pairwise scatter of ERA5 knot percentiles by cluster",
+    subtitle = "Axes = daily temperature percentiles (1990-2019)",
+    theme = theme(plot.title = element_text(face = "bold", size = 11))
+  )
+
+# C. Boxplots of each knot percentile per cluster
+box_long <- melt(feat_dt[, .(URAU_CODE, cluster, p10, p75, p90)],
+                 id.vars = c("URAU_CODE", "cluster"),
+                 variable.name = "percentile", value.name = "temp_C")
+box_long[, percentile := factor(percentile, levels = c("p10", "p75", "p90"),
+                                labels = c("p10 (cold extreme)",
+                                           "p75 (warm moderate)",
+                                           "p90 (heat extreme)"))]
+
+p_box <- ggplot(box_long, aes(cluster, temp_C, fill = cluster)) +
+  geom_boxplot(outlier.size = 0.6, alpha = 0.8) +
+  scale_fill_manual(values = cluster_colors, guide = "none") +
+  facet_wrap(~percentile, scales = "free_y") +
+  labs(x = "Cluster (C1 = coldest → C4 = warmest)",
+       y = "Temperature (°C)",
+       title = "Knot percentile distributions per cluster",
+       subtitle = "ERA5 1990-2019 historical series; each point = one city") +
   theme_bw(base_size = 10) +
   theme(strip.background = element_rect(fill = "grey92"),
         plot.title = element_text(face = "bold"))
 
-# Plot C: elbow diagnostic
+# D. Elbow plot
 p_elbow <- ggplot(elbow_df, aes(k, wss)) +
   geom_line(colour = "steelblue") +
   geom_point(colour = "steelblue", size = 2.5) +
-  geom_vline(xintercept = n_clusters, linetype = "dashed",
-             colour = "firebrick") +
-  annotate("text", x = n_clusters + 0.15,
-           y = max(elbow_df$wss) * 0.95,
+  geom_vline(xintercept = n_clusters, linetype = "dashed", colour = "firebrick") +
+  annotate("text", x = n_clusters + 0.15, y = max(elbow_df$wss) * 0.95,
            label = sprintf("k = %d (chosen)", n_clusters),
            hjust = 0, colour = "firebrick", size = 3.5) +
   scale_x_continuous(breaks = 2:10) +
@@ -407,9 +464,101 @@ p_elbow <- ggplot(elbow_df, aes(k, wss)) +
        title = "Elbow plot — k-means on city ERA5 knots (p10, p75, p90)") +
   theme_bw(base_size = 10)
 
-out_pdf <- "plots/nuts2_gdp_vs_multiplier.pdf"
-pdf(out_pdf, width = 12, height = 8)
-print(p_all); print(p_facet); print(p_elbow)
+# ── GDP vs MULTIPLIER SCATTER PLOTS ───────────────────────────────────────────
+
+make_scatter_pages <- function(plot_dt, nuts_level, comp) {
+  sub_dt <- plot_dt[component == comp]
+  if (nrow(sub_dt) == 0) return(invisible(NULL))
+
+  clbl  <- clust_labels_fn(sub_dt)
+  x_lab <- make_gdp_label(nuts_level)
+  y_lab <- sprintf("%s-mortality multiplier\n(SSP%s %d vs 1990-2019 ERA5, age %s)",
+                   tools::toTitleCase(comp),
+                   ssp_labels[focus_ssp], focus_year, focus_agegroup)
+  caption_txt <- paste0(
+    "Multiplier = mean RR(", focus_year, ", ", ssp_labels[focus_ssp], ") / ",
+    "mean RR(1990-2019 ERA5 baseline)\n",
+    "GDP: Eurostat ", gdp_unit, " ", gdp_ref_year, ". ",
+    "PPS_EU27_2020_HAB: GDP per inhabitant in Purchasing Power Standard, ",
+    "EU27 2020 = 100."
+  )
+
+  y_range <- range(sub_dt$multiplier, na.rm = TRUE)
+  y_lims  <- c(floor(y_range[1] * 20) / 20, ceiling(y_range[2] * 20) / 20)
+
+  # Plot A: all cities combined
+  p_all <- ggplot(sub_dt, aes(gdp_pps, multiplier,
+                               colour = cluster, label = LABEL)) +
+    geom_point(size = 1.8, alpha = 0.75) +
+    geom_smooth(aes(group = cluster), method = "lm", se = TRUE,
+                linewidth = 0.7, alpha = 0.12) +
+    geom_text_repel(size = 1.8, max.overlaps = 15, segment.colour = "grey60") +
+    scale_colour_manual(values = cluster_colors, labels = clbl,
+                        name = "Temperature\ncluster") +
+    scale_x_continuous(name = x_lab) +
+    scale_y_continuous(name = y_lab, limits = y_lims) +
+    geom_hline(yintercept = 1, linetype = "dotted", colour = "grey40") +
+    labs(
+      title = sprintf(
+        "GDP vs %s-mortality multiplier — all cities (%s)", comp, nuts_level),
+      subtitle = sprintf(
+        "GDP at %s level (spatial join). Clusters = k-means on ERA5 p10/p75/p90, k=%d.",
+        nuts_level, n_clusters),
+      caption = caption_txt
+    ) +
+    theme_bw(base_size = 11) +
+    theme(plot.title    = element_text(face = "bold", size = 11),
+          plot.subtitle = element_text(size = 8, colour = "grey40"),
+          plot.caption  = element_text(size = 7, colour = "grey40"))
+
+  # Plot B: faceted by cluster — FIXED y-scale across panels
+  p_facet <- ggplot(sub_dt, aes(gdp_pps, multiplier,
+                                 colour = cluster, label = LABEL)) +
+    geom_point(size = 1.8, alpha = 0.8) +
+    geom_smooth(method = "lm", se = TRUE,
+                linewidth = 0.8, alpha = 0.15, colour = "black") +
+    geom_text_repel(size = 1.6, max.overlaps = 10, segment.colour = "grey70") +
+    geom_hline(yintercept = 1, linetype = "dotted", colour = "grey40") +
+    scale_colour_manual(values = cluster_colors, guide = "none") +
+    scale_x_continuous(name = x_lab) +
+    scale_y_continuous(name = y_lab, limits = y_lims) +
+    facet_wrap(~cluster, labeller = as_labeller(clbl), scales = "fixed") +
+    labs(
+      title    = sprintf("GDP vs %s-mortality multiplier by cluster (%s)", comp, nuts_level),
+      subtitle = "Fixed y-scale across panels. Black band = OLS 95% CI.",
+      caption  = caption_txt
+    ) +
+    theme_bw(base_size = 10) +
+    theme(strip.background = element_rect(fill = "grey92"),
+          plot.title   = element_text(face = "bold"),
+          plot.caption = element_text(size = 7, colour = "grey40"))
+
+  list(all = p_all, facet = p_facet)
+}
+
+# ── Assemble PDF ──────────────────────────────────────────────────────────────
+
+out_pdf <- "plots/nuts_gdp_vs_multiplier.pdf"
+pdf(out_pdf, width = 14, height = 9)
+
+# Section 1: Cluster diagnostics
+print(p_map)
+print(p_pairs)
+print(p_box)
+print(p_elbow)
+
+# Section 2: GDP vs multiplier — NUTS2, each component
+for (comp in components) {
+  pg <- make_scatter_pages(plot_nuts2, "NUTS2", comp)
+  if (!is.null(pg)) { print(pg$all); print(pg$facet) }
+}
+
+# Section 3: GDP vs multiplier — NUTS3, each component
+for (comp in components) {
+  pg <- make_scatter_pages(plot_nuts3, "NUTS3", comp)
+  if (!is.null(pg)) { print(pg$all); print(pg$facet) }
+}
+
 dev.off()
 cat(sprintf("  Saved: %s\n", out_pdf))
 
