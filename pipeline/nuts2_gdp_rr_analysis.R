@@ -665,11 +665,12 @@ make_scatter_pages <- function(plot_dt, comp, ssp_val) {
     cl_lbl <- clbl[cl]
     ggplot(cl_dt, aes(gdp_pps, multiplier, label = LABEL)) +
       geom_linerange(aes(ymin = multiplier_p05, ymax = multiplier_p95),
-                     alpha = 0.25, linewidth = 0.3, colour = cl_col) +
-      geom_point(size = 1.8, alpha = 0.8, colour = cl_col) +
+                     alpha = 0.25, linewidth = 0.4, colour = cl_col) +
+      geom_point(size = 2.5, alpha = 0.8, colour = cl_col) +
       geom_smooth(method = "lm", se = TRUE,
-                  linewidth = 0.8, alpha = 0.15, colour = "black") +
-      geom_text_repel(size = 1.6, max.overlaps = 10, segment.colour = "grey70") +
+                  linewidth = 0.9, alpha = 0.15, colour = "black") +
+      geom_text_repel(size = 3.2, max.overlaps = 25, segment.colour = "grey60",
+                      segment.size = 0.3) +
       geom_hline(yintercept = 1, linetype = "dotted", colour = "grey40") +
       scale_x_continuous(name = x_lab) +
       scale_y_continuous(name = y_lab, limits = y_lims) +
@@ -679,9 +680,9 @@ make_scatter_pages <- function(plot_dt, comp, ssp_val) {
         subtitle = "OLS trend with 95% CI shown.",
         caption  = caption_txt
       ) +
-      theme_bw(base_size = 11) +
+      theme_bw(base_size = 13) +
       theme(plot.title   = element_text(face = "bold"),
-            plot.caption = element_text(size = 7, colour = "grey40", hjust = 0))
+            plot.caption = element_text(size = 8, colour = "grey40", hjust = 0))
   })
   names(p_clusters) <- clusters_present
 
