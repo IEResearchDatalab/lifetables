@@ -101,6 +101,16 @@ save_fig <- function(p, name, width = 10, height = 7) {
 
 if (!dir.exists("plots")) dir.create("plots")
 
+# ── Display mode flag ─────────────────────────────────────────────────────────
+# Set use_pct_change = TRUE to display values as % change relative to baseline
+# (e.g. +12%) instead of as a multiplier ratio (e.g. 1.12).
+use_pct_change <- TRUE
+
+mult2val   <- function(x) if (use_pct_change) (x - 1) * 100 else x
+ref_val    <- if (use_pct_change) 0 else 1
+mult_label <- if (use_pct_change) function(x) sprintf("%+.1f%%", x) else label_number(accuracy = 0.01)
+mult_title <- if (use_pct_change) "Mortality\nmultiplier (%)" else "Mortality\nmultiplier"
+
 # ── Load pre-computed results ────────────────────────────────────────────────
 
 cat("Loading pre-computed results...\n")
@@ -166,11 +176,12 @@ cntr_sf[["_code"]] <- as.character(cntr_sf[[id_col]])
 # meaning is consistent when comparing panels
 all_map_vals <- results[component == "total" & ssp == "3" &
                           year %in% c(2050, 2075, 2099) & age == 65, multiplier]
-map_limit_global <- max(abs(all_map_vals - 1), na.rm = TRUE) * 1.05
+map_limit_global <- 10
 
 make_map <- function(yr) {
   map_data <- results[component == "total" & ssp == "3" & year == yr & age == 65,
                       .(country_code, country_name, multiplier)]
+  map_data[, display_val := mult2val(multiplier)]
 
   cntr_map <- merge(cntr_sf, map_data,
                     by.x = "_code", by.y = "country_code",
@@ -181,30 +192,27 @@ make_map <- function(yr) {
   )
 
   ggplot(cntr_map) +
-    geom_sf(aes(fill = multiplier), color = "white", linewidth = 0.25) +
-    shadowtext::geom_shadowtext(
-      data          = map_labels,
-      aes(geometry  = geometry,
-          label = ifelse(multiplier >= 1,
+    geom_sf(aes(fill = display_val), color = "white", linewidth = 0.25) +
+    geom_sf_text(
+      data     = map_labels,
+      aes(label = ifelse(multiplier >= 1,
                          sprintf("+%.0f%%", (multiplier - 1) * 100),
                          sprintf("-%.0f%%", (1 - multiplier) * 100))),
-      stat          = "sf_coordinates",
-      size          = 2.4,
-      colour        = "white",
-      bg.colour     = "black",
-      bg.r          = 0.18,
+      size          = 2.8,
+      colour        = "black",
       fontface      = "bold",
       check_overlap = TRUE
     ) +
     scale_fill_gradient2(
       low      = "#2166ac",
-      mid      = "white",
+      mid      = "#d9d9d9",
       high     = "#b2182b",
-      midpoint = 1,
-      limits   = c(1 - map_limit_global, 1 + map_limit_global),
+      midpoint = ref_val,
+      limits   = c(ref_val - map_limit_global, ref_val + map_limit_global),
+      oob      = scales::squish,
       na.value = "grey80",
-      name     = "Mortality\nmultiplier",
-      labels   = label_number(accuracy = 0.01),
+      name     = mult_title,
+      labels   = mult_label,
       guide    = guide_colorbar(
         barwidth = unit(8, "cm"), barheight = unit(0.4, "cm"),
         title.position = "top", title.hjust = 0.5
@@ -455,17 +463,37 @@ make_hc_scatter <- function(yr) {
                                country_code %in% hc_wide$country_code,
                              .(multiplier, country_code)][
                 match(hc_wide$country_code, country_code), multiplier]]
+  hc_wide[, `:=`(cold = mult2val(cold), heat = mult2val(heat), total = mult2val(total))]
+
+  hc_x_lab <- if (use_pct_change)
+    sprintf("Cold mortality multiplier (%% vs baseline, %d)", yr)
+  else
+    sprintf("Cold mortality multiplier (%d / baseline)", yr)
+  hc_y_lab <- if (use_pct_change)
+    sprintf("Heat mortality multiplier (%% vs baseline, %d)", yr)
+  else
+    sprintf("Heat mortality multiplier (%d / baseline)", yr)
+  hc_sub <- if (use_pct_change)
+    sprintf("Heat vs cold mortality multiplier by %d under SSP3-7.0, age 65.\nValues > 0%% = increased burden relative to 1990-2019 baseline.", yr)
+  else
+    sprintf("Change in heat vs cold mortality multiplier by %d under SSP3-7.0, age 65.\nValues > 1 = increased burden relative to 1990-2019 baseline.", yr)
 
   ggplot(hc_wide, aes(x = cold, y = heat)) +
-    geom_vline(xintercept = 1, linewidth = 0.4, colour = "#cccccc") +
-    geom_hline(yintercept = 1, linewidth = 0.4, colour = "#cccccc") +
+    geom_vline(xintercept = ref_val, linewidth = 0.4, colour = "#cccccc") +
+    geom_hline(yintercept = ref_val, linewidth = 0.4, colour = "#cccccc") +
     geom_point(aes(fill = total, size = total),
                shape = 21, colour = "white", stroke = 0.5, alpha = 0.9) +
-    scale_fill_gradientn(
-      colours = c("#fee8c8", "#fdbb84", "#e34a33", "#b30000"),
-      name    = "Total\nmultiplier",
-      guide   = guide_colorbar(barwidth = unit(5, "cm"), barheight = unit(0.35, "cm"),
-                               title.position = "top", title.hjust = 0.5)
+    scale_fill_gradient2(
+      low      = "#2166ac",
+      mid      = "#d9d9d9",
+      high     = "#b2182b",
+      midpoint = ref_val,
+      limits   = c(ref_val - map_limit_global, ref_val + map_limit_global),
+      oob      = scales::squish,
+      name     = mult_title,
+      labels   = mult_label,
+      guide    = guide_colorbar(barwidth = unit(5, "cm"), barheight = unit(0.35, "cm"),
+                                title.position = "top", title.hjust = 0.5)
     ) +
     scale_size_continuous(range = c(2, 9), guide = "none") +
     geom_label_repel(
@@ -476,19 +504,17 @@ make_hc_scatter <- function(yr) {
       box.padding = 0.35, point.padding = 0.3, max.overlaps = 30,
       seed = 42
     ) +
-    annotate("rect", xmin = -Inf, xmax = 1, ymin = 1, ymax = Inf,
+    annotate("rect", xmin = -Inf, xmax = ref_val, ymin = ref_val, ymax = Inf,
              fill = "#fee0d2", alpha = 0.15) +
-    annotate("rect", xmin = 1, xmax = Inf, ymin = -Inf, ymax = 1,
+    annotate("rect", xmin = ref_val, xmax = Inf, ymin = -Inf, ymax = ref_val,
              fill = "#deebf7", alpha = 0.15) +
-    scale_x_continuous(labels = label_number(accuracy = 0.01)) +
-    scale_y_continuous(labels = label_number(accuracy = 0.01)) +
+    scale_x_continuous(labels = mult_label) +
+    scale_y_continuous(labels = mult_label) +
     labs(
       title    = "Climate change widens the gap between heat and cold mortality",
-      subtitle = sprintf(
-        "Change in heat vs cold mortality multiplier by %d under SSP3-7.0, age 65.\nValues > 1 = increased burden relative to 1990–2019 baseline.", yr
-      ),
-      x       = sprintf("Cold mortality multiplier (%d / baseline)", yr),
-      y       = sprintf("Heat mortality multiplier (%d / baseline)", yr),
+      subtitle = hc_sub,
+      x       = hc_x_lab,
+      y       = hc_y_lab,
       caption = "Each bubble = one country; size proportional to total (heat + cold) multiplier."
     ) +
     theme_pub(base_size = 12)
@@ -546,29 +572,40 @@ ts_eu[, ssp_label := factor(ssp_label, levels = names(ssp_palette))]
 ts_eu_labels <- ts_eu[year == 2075][order(median)]
 ts_eu_labels[, y_nudge := median + c(-0.003, 0, 0.003)]
 
+# ── Transform for display mode
+label_nudge    <- if (use_pct_change) c(-0.3, 0, 0.3) else c(-0.003, 0, 0.003)
+ts_bg_d        <- copy(ts_bg)
+ts_bg_d[,  median := mult2val(median)]
+ts_hl_d        <- copy(ts_hl)
+ts_hl_d[,  median := mult2val(median)]
+ts_eu_d        <- copy(ts_eu)
+ts_eu_d[,  `:=`(median = mult2val(median), q10 = mult2val(q10), q90 = mult2val(q90))]
+ts_eu_labels_d <- ts_eu_d[year == 2075][order(median)]
+ts_eu_labels_d[, y_nudge := median + label_nudge]
+
 p_ts <- ggplot() +
   # Baseline reference
-  geom_hline(yintercept = 1, linewidth = 0.35, colour = "#aaaaaa",
+  geom_hline(yintercept = ref_val, linewidth = 0.35, colour = "#aaaaaa",
              linetype = "dashed") +
   # Background spaghetti: SSP3, all other countries, faint grey
-  geom_line(data = ts_bg,
+  geom_line(data = ts_bg_d,
             aes(x = year, y = median, group = country_code),
             colour = "#cccccc", linewidth = 0.3, alpha = 0.7) +
   # EU median ribbon (80% CI across countries)
-  geom_ribbon(data = ts_eu,
+  geom_ribbon(data = ts_eu_d,
               aes(x = year, ymin = q10, ymax = q90, fill = ssp_label),
               alpha = 0.14) +
   # EU median line (thick)
-  geom_line(data = ts_eu,
+  geom_line(data = ts_eu_d,
             aes(x = year, y = median, colour = ssp_label),
             linewidth = 1.15) +
   # Highlighted countries (SSP3 only for legibility)
-  geom_line(data = ts_hl[ssp == "3"],
+  geom_line(data = ts_hl_d[ssp == "3"],
             aes(x = year, y = median, group = country_name),
             colour = ssp_palette[["SSP3-7.0"]],
             linewidth = 0.55, alpha = 0.65) +
   # End-of-century labels (nudged to avoid overlap)
-  geom_text(data = ts_eu_labels,
+  geom_text(data = ts_eu_labels_d,
             aes(x = 2101, y = y_nudge, label = ssp_label, colour = ssp_label),
             hjust = 0, size = 3.2, family = "Montserrat", fontface = "bold",
             show.legend = FALSE) +
@@ -577,13 +614,18 @@ p_ts <- ggplot() +
   scale_fill_manual(values = ssp_palette, guide = "none") +
   scale_x_continuous(breaks = seq(2020, 2099, 20),
                      limits = c(2015, 2130), expand = c(0, 0)) +
-  scale_y_continuous(labels = label_number(accuracy = 0.01)) +
+  scale_y_continuous(labels = mult_label) +
   labs(
     title    = "Diverging mortality futures under different emission pathways",
-    subtitle = paste0("Total mortality multiplier for age group 65–74, relative to 1990–2019 baseline.\n",
-                      "Thick line = European median; shaded band = 10th–90th percentile across countries (5-yr smoothed)."),
+    subtitle = paste0(
+      if (use_pct_change)
+        "Total mortality multiplier for age group 65\u201374, relative to 1990\u20132019 baseline (shown as %% change).\n"
+      else
+        "Total mortality multiplier for age group 65\u201374, relative to 1990\u20132019 baseline.\n",
+      "Thick line = European median; shaded band = 10th\u201390th percentile across countries (5-yr smoothed)."
+    ),
     x        = NULL,
-    y        = "Mortality multiplier",
+    y        = if (use_pct_change) "Mortality multiplier (%)" else "Mortality multiplier",
     caption  = paste0("GCM ensemble of 19 models pooled. Grey lines = individual countries under SSP3-7.0.\n",
                       "Highlighted coloured lines = selected countries (FI, DE, FR, IT, ES, RO, PL, EL) under SSP3-7.0.")
   ) +
@@ -641,21 +683,29 @@ make_heatmap <- function(yr) {
   )]
   hmd[, age_label := factor(age_label,
                              levels = c("20–44", "45–64", "65–74",
-                                        "75–84", "85+"))]
+                                        "75\u201384", "85+"))]
+  hmd[, display_val := mult2val(multiplier)]
+  hmd[, cell_label  := if (use_pct_change) sprintf("%+.1f%%", display_val) else sprintf("%.2f", multiplier)]
   country_order <- hmd[age == 67][order(multiplier), country_code]
   hmd[, country_code := factor(country_code, levels = country_order)]
   hmd[, country_name := factor(country_name, levels = country_names[country_order])]
+  hm_limit <- max(abs(hmd$display_val))
 
-  ggplot(hmd, aes(x = age_label, y = country_name, fill = multiplier)) +
+  ggplot(hmd, aes(x = age_label, y = country_name, fill = display_val)) +
     geom_tile(colour = "white", linewidth = 0.4) +
-    geom_text(aes(label = sprintf("%.2f", multiplier)),
-              size = 3, family = "Montserrat", color = "white", fontface = "bold") +
-    scale_fill_gradientn(
-      colours = c("#fff5f0", "#fcbba1", "#fc8d59", "#ef6548",
-                  "#d7301f", "#990000", "#67000d"),
-      name    = "Mortality\nmultiplier",
-      guide   = guide_colorbar(barwidth = unit(6, "cm"), barheight = unit(0.4, "cm"),
-                               title.position = "top", title.hjust = 0.5)
+    geom_text(aes(label = cell_label),
+              size = 3, family = "Montserrat", color = "black", fontface = "bold") +
+    scale_fill_gradient2(
+      low      = "#2166ac",
+      mid      = "#d9d9d9",
+      high     = "#b2182b",
+      midpoint = ref_val,
+      limits   = c(ref_val - map_limit_global, ref_val + map_limit_global),
+      oob      = scales::squish,
+      name     = mult_title,
+      labels   = mult_label,
+      guide    = guide_colorbar(barwidth = unit(6, "cm"), barheight = unit(0.4, "cm"),
+                                title.position = "top", title.hjust = 0.5)
     ) +
     labs(
       title    = "Older Europeans face exponentially higher mortality multipliers",
