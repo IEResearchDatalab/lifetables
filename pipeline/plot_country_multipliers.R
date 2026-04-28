@@ -188,7 +188,7 @@ make_map <- function(yr) {
                     all.x = TRUE)
 
   map_labels <- suppressWarnings(
-    st_centroid(cntr_map[!is.na(cntr_map$multiplier), ])
+    st_point_on_surface(cntr_map[!is.na(cntr_map$multiplier), ])
   )
 
   ggplot(cntr_map) +
