@@ -160,6 +160,40 @@ apply_multiplier <- function(qx_nc, mult_dt) {
   qx_cc
 }
 
+# Cohort EPV helper: % change in äx and Ax for one entry-age cohort
+compute_cohort_pct_epv <- function(proj, mult_mat, entry_age,
+                                    cohort_year = 2025) {
+  ages  <- entry_age:omega
+  years <- cohort_year + seq_along(ages) - 1L
+  n     <- length(ages)
+  yr_avail <- as.integer(setdiff(names(mult_mat), "age"))
+
+  qx_nc   <- numeric(n)
+  mult_vec <- numeric(n)
+  for (k in seq_len(n)) {
+    ag <- ages[k];  yr <- years[k]
+    row <- proj[year == yr & age == ag, qx]
+    qx_nc[k] <- if (length(row) == 0 || is.na(row[1])) 0.999 else row[1]
+    yr_use   <- yr_avail[which.min(abs(yr_avail - yr))]
+    m_row    <- mult_mat[age == ag, get(as.character(yr_use))]
+    mult_vec[k] <- if (length(m_row) == 0 || is.na(m_row[1])) 1 else m_row[1]
+  }
+  qx_nc[n] <- 1.0
+  qx_cc    <- pmin(qx_nc * mult_vec, 1.0);  qx_cc[n] <- 1.0
+
+  kpx_nc <- cumprod(c(1, (1 - qx_nc[-n])))
+  kpx_cc <- cumprod(c(1, (1 - qx_cc[-n])))
+  k_idx  <- 0:(n - 1)
+
+  ann_nc <- sum(v^k_idx * kpx_nc)
+  ann_cc <- sum(v^k_idx * kpx_cc)
+  ins_nc <- sum(v^(k_idx + 1) * kpx_nc * qx_nc)
+  ins_cc <- sum(v^(k_idx + 1) * kpx_cc * qx_cc)
+
+  list(pct_da = 100 * (ann_cc - ann_nc) / ann_nc,
+       pct_dA = 100 * (ins_cc - ins_nc) / ins_nc)
+}
+
 # ==============================================================================
 # 1.  LOAD DATA
 # ==============================================================================
@@ -167,10 +201,10 @@ apply_multiplier <- function(qx_nc, mult_dt) {
 proj_ro <- fread("results_csv/mortality_projections_bucharest.csv")
 proj_at <- fread("results_csv/mortality_projections_vienna.csv")
 
-mult_ro <- fread("results_csv/country_multiplier_matrices/romania_rcp70.csv")[
-  , .(age, mult = get(as.character(mult_year)))]
-mult_at <- fread("results_csv/country_multiplier_matrices/austria_rcp70.csv")[
-  , .(age, mult = get(as.character(mult_year)))]
+mult_ro_mat <- fread("results_csv/country_multiplier_matrices/romania_rcp70.csv")
+mult_at_mat <- fread("results_csv/country_multiplier_matrices/austria_rcp70.csv")
+mult_ro <- mult_ro_mat[, .(age, mult = get(as.character(mult_year)))]
+mult_at <- mult_at_mat[, .(age, mult = get(as.character(mult_year)))]
 
 # ==============================================================================
 # 2.  COMPUTE
@@ -426,3 +460,86 @@ p_c3 <- ggplot(pct_long, aes(x = age, y = pct_change, colour = country)) +
 
 ggsave("plots/vig_c3_epv_pct_change.png", p_c3, width = 12, height = 7, dpi = 200, bg = "transparent")
 cat("Saved plots/vig_c3_epv_pct_change.png\n")
+
+# -- C4: Mortality multiplier at age 65, 2025-2100 ----------------------------
+yr_cols   <- setdiff(names(mult_at_mat), "age")
+mult65_dt <- rbind(
+  data.table(country = "Austria",
+             year    = as.integer(yr_cols),
+             mult    = unlist(mult_at_mat[age == 65, yr_cols, with = FALSE])),
+  data.table(country = "Romania",
+             year    = as.integer(yr_cols),
+             mult    = unlist(mult_ro_mat[age == 65, yr_cols, with = FALSE]))
+)
+mult65_dt <- mult65_dt[year >= 2025]
+mult65_dt[, pct_excess := (mult - 1) * 100]
+
+country_cols <- c("Austria" = IE_CYAN, "Romania" = IE_AMBER)
+
+p_c4 <- ggplot(mult65_dt, aes(x = year, y = pct_excess, colour = country)) +
+  geom_line(linewidth = 1.8) +
+  geom_hline(yintercept = 0, colour = IE_MID, linewidth = 0.5, linetype = "dashed") +
+  scale_colour_manual(values = country_cols, name = NULL) +
+  scale_x_continuous(breaks = seq(2025, 2099, 15)) +
+  scale_y_continuous(labels = function(x) sprintf("%+.1f%%", x)) +
+  labs(
+    title    = "Rising mortality pressure at age 65 under RCP 7.0",
+    subtitle = "Excess mortality multiplier vs baseline (1990\u20132019) | EURO-CORDEX",
+    x = NULL, y = "Excess mortality (%)",
+    caption = paste0(
+      "EURO-CORDEX RCP 7.0. Country multipliers from population-weighted city ERF curves.\n",
+      "Austria proxy: Vienna; Romania proxy: Bucharest.")
+  ) +
+  ft_theme() +
+  theme(legend.position = "top")
+
+ggsave("plots/vig_c4_mult65_trajectory.png", p_c4, width = 10, height = 6, dpi = 200, bg = "transparent")
+cat("Saved plots/vig_c4_mult65_trajectory.png\n")
+
+# -- C5: EPV % change by entry age (cohort entering 2025) ---------------------
+ENTRY_AGES <- c(30, 40, 50, 60, 65, 70)
+bar_list   <- list()
+for (ctry in c("Austria", "Romania")) {
+  proj_c <- if (ctry == "Austria") proj_at else proj_ro
+  mult_c <- if (ctry == "Austria") mult_at_mat else mult_ro_mat
+  for (ea in ENTRY_AGES) {
+    res <- compute_cohort_pct_epv(proj_c, mult_c, ea)
+    bar_list[[length(bar_list) + 1]] <- data.table(
+      country = ctry, entry_age = ea,
+      pct_da  = res$pct_da, pct_dA = res$pct_dA
+    )
+  }
+}
+bar_dt   <- rbindlist(bar_list)
+bar_long <- melt(bar_dt, id.vars = c("country", "entry_age"),
+                  measure.vars = c("pct_da", "pct_dA"),
+                  variable.name = "product", value.name = "pct_change")
+bar_long[, product_label := fifelse(product == "pct_da",
+                                     "Annuity (\u00e4x)", "Insurance (Ax)")]
+bar_long[, entry_age_f := factor(entry_age)]
+
+p_c5 <- ggplot(bar_long, aes(x = entry_age_f, y = pct_change, fill = country)) +
+  geom_col(position = position_dodge(width = 0.75), width = 0.65, alpha = 0.9) +
+  geom_hline(yintercept = 0, colour = IE_MID, linewidth = 0.5) +
+  facet_wrap(~ product_label, ncol = 2, scales = "free_y") +
+  scale_fill_manual(values = country_cols, name = NULL) +
+  scale_y_continuous(labels = function(x) sprintf("%+.2f%%", x)) +
+  labs(
+    title    = "Climate change alters the cost of life products",
+    subtitle = paste0(
+      "% change in EPV under RCP 7.0 vs baseline | cohort entering 2025 | i = ",
+      i_rate * 100, "%"),
+    x = "Entry age", y = "EPV change (%)",
+    caption = paste0(
+      "\u0394Ax > 0: climate raises insurance payouts. ",
+      "\u0394\u00e4x < 0: shorter payout horizon reduces annuity cost.\n",
+      "Eurostat EUROPOP2023 + EURO-CORDEX RCP 7.0")
+  ) +
+  ft_theme() +
+  theme(
+    legend.position = "top",
+    panel.spacing   = unit(1.5, "lines")
+  )
+
+ggsave("plots/vig_c5_epv_bar_entry_age.png", p_c5, width = 12, height = 7, dpi = 200, bg = "transparent")
+cat("Saved plots/vig_c5_epv_bar_entry_age.png\n")
