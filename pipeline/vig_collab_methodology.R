@@ -497,37 +497,47 @@ ggsave("plots/vig_c4_mult65_trajectory.png", p_c4, width = 10, height = 6, dpi =
 cat("Saved plots/vig_c4_mult65_trajectory.png\n")
 
 # -- C5: EPV % change by entry age (cohort entering 2025) ---------------------
-ENTRY_AGES <- c(30, 40, 50, 60, 65, 70)
-bar_list   <- list()
+ENTRY_AGES   <- c(30, 40, 50, 60, 65, 70)
+COHORT_YEARS <- c(2025, 2050, 2075)
+
+bar_list <- list()
 for (ctry in c("Austria", "Romania")) {
   proj_c <- if (ctry == "Austria") proj_at else proj_ro
   mult_c <- if (ctry == "Austria") mult_at_mat else mult_ro_mat
-  for (ea in ENTRY_AGES) {
-    res <- compute_cohort_pct_epv(proj_c, mult_c, ea)
-    bar_list[[length(bar_list) + 1]] <- data.table(
-      country = ctry, entry_age = ea,
-      pct_da  = res$pct_da, pct_dA = res$pct_dA
-    )
+  for (cy in COHORT_YEARS) {
+    for (ea in ENTRY_AGES) {
+      res <- compute_cohort_pct_epv(proj_c, mult_c, ea, cohort_year = cy)
+      bar_list[[length(bar_list) + 1]] <- data.table(
+        country     = ctry,
+        cohort_year = cy,
+        entry_age   = ea,
+        pct_da      = res$pct_da,
+        pct_dA      = res$pct_dA
+      )
+    }
   }
 }
 bar_dt   <- rbindlist(bar_list)
-bar_long <- melt(bar_dt, id.vars = c("country", "entry_age"),
+bar_long <- melt(bar_dt, id.vars = c("country", "cohort_year", "entry_age"),
                   measure.vars = c("pct_da", "pct_dA"),
                   variable.name = "product", value.name = "pct_change")
 bar_long[, product_label := fifelse(product == "pct_da",
                                      "Annuity (\u00e4x)", "Insurance (Ax)")]
-bar_long[, entry_age_f := factor(entry_age)]
+bar_long[, entry_age_f   := factor(entry_age)]
+bar_long[, cohort_label  := paste0("Entry: ", cohort_year)]
+bar_long[, cohort_label  := factor(cohort_label,
+                                    levels = paste0("Entry: ", COHORT_YEARS))]
 
 p_c5 <- ggplot(bar_long, aes(x = entry_age_f, y = pct_change, fill = country)) +
   geom_col(position = position_dodge(width = 0.75), width = 0.65, alpha = 0.9) +
   geom_hline(yintercept = 0, colour = IE_MID, linewidth = 0.5) +
-  facet_wrap(~ product_label, ncol = 2, scales = "free_y") +
+  facet_grid(product_label ~ cohort_label, scales = "free_y") +
   scale_fill_manual(values = country_cols, name = NULL) +
   scale_y_continuous(labels = function(x) sprintf("%+.2f%%", x)) +
   labs(
     title    = "Climate change alters the cost of life products",
     subtitle = paste0(
-      "% change in EPV under RCP 7.0 vs baseline | cohort entering 2025 | i = ",
+      "% change in EPV (RCP 7.0 vs baseline) by entry cohort | i = ",
       i_rate * 100, "%"),
     x = "Entry age", y = "EPV change (%)",
     caption = paste0(
@@ -538,8 +548,8 @@ p_c5 <- ggplot(bar_long, aes(x = entry_age_f, y = pct_change, fill = country)) +
   ft_theme() +
   theme(
     legend.position = "top",
-    panel.spacing   = unit(1.5, "lines")
+    panel.spacing   = unit(1.2, "lines")
   )
 
-ggsave("plots/vig_c5_epv_bar_entry_age.png", p_c5, width = 12, height = 7, dpi = 200, bg = "transparent")
+ggsave("plots/vig_c5_epv_bar_entry_age.png", p_c5, width = 16, height = 10, dpi = 200, bg = "transparent")
 cat("Saved plots/vig_c5_epv_bar_entry_age.png\n")
