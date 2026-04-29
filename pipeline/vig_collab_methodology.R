@@ -41,36 +41,36 @@ suppressPackageStartupMessages({
   library(showtext)
 })
 
-# -- IE Science and Technology colour palette ---------------------------------
-IE_GREEN  <- "#6DC201"  # lime green  (primary brand)
-IE_FOREST <- "#1F3700"  # dark forest green
-IE_SALMON <- "#EB7974"  # salmon / coral accent
-IE_NAVY   <- "#0A005C"  # dark navy
-IE_DARK   <- "#0F0F0F"  # near-black text
-IE_MID    <- "#434445"  # mid-grey
-IE_LIGHT  <- "#DDDDDD"  # grid lines
+# -- IE Science and Technology + Financial Times colour palette ---------------
+IE_BG     <- "#FFF1E5"  # FT cream background
+IE_GREEN  <- "#6DC201"  # IE lime green  (primary brand)
+IE_FOREST <- "#1F3700"  # IE dark forest green
+IE_NAVY   <- "#0A005C"  # IE dark navy
+IE_TEAL   <- "#006E8C"  # mid blue-green (IE blue tone)
+IE_DARK   <- "#1A1A1A"  # near-black text
+IE_MID    <- "#5A5A5A"  # mid-grey
+IE_LIGHT  <- "#D9D0C7"  # FT warm grid lines
 
 ft_theme <- function() {
-  theme_minimal(base_family = "lato") +
+  theme_minimal(base_family = "montserrat") +
     theme(
-      plot.background   = element_rect(fill = "transparent", colour = NA),
-      panel.background  = element_rect(fill = "transparent", colour = NA),
+      plot.background   = element_rect(fill = IE_BG, colour = NA),
+      panel.background  = element_rect(fill = IE_BG, colour = NA),
       panel.grid.major  = element_line(colour = IE_LIGHT, linewidth = 0.3),
       panel.grid.minor  = element_blank(),
-      axis.text         = element_text(colour = IE_DARK, size = 9),
-      axis.title        = element_text(colour = IE_DARK, size = 10),
-      plot.title        = element_text(family = "playfair", colour = IE_DARK,
-                                       size = 14, face = "bold"),
-      plot.subtitle     = element_text(colour = IE_MID, size = 9),
-      plot.caption      = element_text(colour = IE_MID, size = 7),
-      legend.background = element_rect(fill = "transparent", colour = NA),
-      legend.text       = element_text(colour = IE_DARK, size = 8),
-      legend.title      = element_text(colour = IE_DARK, size = 9, face = "bold")
+      axis.text         = element_text(colour = IE_DARK, size = 13),
+      axis.title        = element_text(colour = IE_DARK, size = 14, face = "bold"),
+      plot.title        = element_text(colour = IE_NAVY, size = 20, face = "bold",
+                                       margin = margin(b = 6)),
+      plot.subtitle     = element_text(colour = IE_MID, size = 13),
+      plot.caption      = element_text(colour = IE_MID, size = 10),
+      legend.background = element_rect(fill = IE_BG, colour = NA),
+      legend.text       = element_text(colour = IE_DARK, size = 12),
+      legend.title      = element_text(colour = IE_DARK, size = 13, face = "bold")
     )
 }
 
-font_add_google("Playfair Display", "playfair")
-font_add_google("Lato", "lato")
+font_add_google("Montserrat", "montserrat")
 showtext_auto()
 
 # -- Parameters (from collaborator's spreadsheet) ------------------------------
@@ -268,7 +268,7 @@ epv_long <- rbindlist(list(
 colour_map <- c(
   "Baseline.Austria"          = IE_NAVY,
   "Climate (RCP 7.0).Austria" = IE_GREEN,
-  "Baseline.Romania"          = IE_SALMON,
+  "Baseline.Romania"          = IE_TEAL,
   "Climate (RCP 7.0).Romania" = IE_FOREST
 )
 label_map <- c(
@@ -288,7 +288,7 @@ p_ann <- ggplot(age_range,
   geom_line(linewidth = 0.9) +
   geom_vline(xintercept = 65, linetype = "dashed", colour = IE_MID, linewidth = 0.4) +
   annotate("text", x = 66, y = vline_lbl,
-           label = "Age 65", colour = IE_MID, size = 2.8, family = "lato", hjust = 0) +
+           label = "Age 65", colour = IE_MID, size = 4, family = "montserrat", hjust = 0) +
   scale_colour_manual(values = colour_map, labels = label_map, name = NULL) +
   scale_linetype_manual(values = c("Austria" = "solid", "Romania" = "dashed"),
                         guide = "none") +
@@ -319,13 +319,15 @@ p_c1 <- (p_ann / p_ins) +
   plot_annotation(
     title = "Actuarial EPVs under Climate Change",
     subtitle = "Our data (Eurostat + EURO-CORDEX) with collaborator's actuarial framework",
-    theme = theme(plot.background = element_rect(fill = "transparent", colour = NA),
-                  plot.title    = element_text(family = "playfair", colour = IE_DARK,
-                                               size = 15, face = "bold"),
-                  plot.subtitle = element_text(colour = IE_MID, size = 9))
+    theme = theme(plot.background = element_rect(fill = IE_BG, colour = NA),
+                  plot.title    = element_text(family = "montserrat", colour = IE_NAVY,
+                                               size = 22, face = "bold",
+                                               margin = margin(b = 6)),
+                  plot.subtitle = element_text(family = "montserrat",
+                                               colour = IE_MID, size = 13))
   )
 
-ggsave("plots/vig_c1_epv_curves.png", p_c1, width = 10, height = 10, dpi = 200, bg = "transparent")
+ggsave("plots/vig_c1_epv_curves.png", p_c1, width = 10, height = 10, dpi = 200, bg = IE_BG)
 cat("Saved plots/vig_c1_epv_curves.png\n")
 
 # -- C2: Reserve change decomposition at age 65 --------------------------------
@@ -357,10 +359,10 @@ p_c2 <- ggplot(decomp,
   geom_hline(yintercept = 0, colour = IE_DARK, linewidth = 0.4) +
   geom_text(aes(label = sprintf("%+.0f", eur_per_M),
                 vjust = ifelse(eur_per_M >= 0, -0.4, 1.3)),
-            size = 2.8, family = "lato", colour = IE_DARK) +
+            size = 4, family = "montserrat", colour = IE_DARK) +
   facet_wrap(~ country) +
   scale_fill_manual(
-    values = c("FALSE.FALSE" = IE_NAVY, "FALSE.TRUE" = IE_SALMON,
+    values = c("FALSE.FALSE" = IE_NAVY, "FALSE.TRUE" = IE_TEAL,
                "TRUE.FALSE"  = IE_FOREST, "TRUE.TRUE"  = IE_GREEN),
     guide = "none"
   ) +
@@ -372,7 +374,7 @@ p_c2 <- ggplot(decomp,
     caption = "unadj: legacy premium retained | adj: premium recalculated at CC mortality"
   ) +
   ft_theme() +
-  theme(axis.text.x = element_text(size = 7))
+  theme(axis.text.x = element_text(size = 11))
 
-ggsave("plots/vig_c2_reserve_decomp.png", p_c2, width = 10, height = 6, dpi = 200, bg = "transparent")
+ggsave("plots/vig_c2_reserve_decomp.png", p_c2, width = 10, height = 6, dpi = 200, bg = IE_BG)
 cat("Saved plots/vig_c2_reserve_decomp.png\n")
