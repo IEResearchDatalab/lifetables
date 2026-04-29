@@ -528,28 +528,31 @@ bar_long[, cohort_label  := paste0("Entry: ", cohort_year)]
 bar_long[, cohort_label  := factor(cohort_label,
                                     levels = paste0("Entry: ", COHORT_YEARS))]
 
-p_c5 <- ggplot(bar_long, aes(x = entry_age_f, y = pct_change, fill = country)) +
-  geom_col(position = position_dodge(width = 0.75), width = 0.65, alpha = 0.9) +
-  geom_hline(yintercept = 0, colour = IE_MID, linewidth = 0.5) +
-  facet_grid(product_label ~ cohort_label, scales = "free_y") +
-  scale_fill_manual(values = country_cols, name = NULL) +
-  scale_y_continuous(labels = function(x) sprintf("%+.2f%%", x)) +
-  labs(
-    title    = "Climate change alters the cost of life products",
-    subtitle = paste0(
-      "% change in EPV (RCP 7.0 vs baseline) by entry cohort | i = ",
-      i_rate * 100, "%"),
-    x = "Entry age", y = "EPV change (%)",
-    caption = paste0(
-      "\u0394Ax > 0: climate raises insurance payouts. ",
-      "\u0394\u00e4x < 0: shorter payout horizon reduces annuity cost.\n",
-      "Eurostat EUROPOP2023 + EURO-CORDEX RCP 7.0")
-  ) +
-  ft_theme() +
-  theme(
-    legend.position = "top",
-    panel.spacing   = unit(1.2, "lines")
-  )
-
-ggsave("plots/vig_c5_epv_bar_entry_age.png", p_c5, width = 16, height = 10, dpi = 200, bg = "transparent")
-cat("Saved plots/vig_c5_epv_bar_entry_age.png\n")
+for (cy in COHORT_YEARS) {
+  dat <- bar_long[cohort_year == cy]
+  p_c5 <- ggplot(dat, aes(x = entry_age_f, y = pct_change, fill = country)) +
+    geom_col(position = position_dodge(width = 0.75), width = 0.65, alpha = 0.9) +
+    geom_hline(yintercept = 0, colour = IE_MID, linewidth = 0.5) +
+    facet_wrap(~ product_label, ncol = 2, scales = "free_y") +
+    scale_fill_manual(values = country_cols, name = NULL) +
+    scale_y_continuous(labels = function(x) sprintf("%+.2f%%", x)) +
+    labs(
+      title    = "Climate change alters the cost of life products",
+      subtitle = paste0(
+        "% change in EPV (RCP 7.0 vs baseline) | cohort entering ", cy,
+        " | i = ", i_rate * 100, "%"),
+      x = "Entry age", y = "EPV change (%)",
+      caption = paste0(
+        "\u0394Ax > 0: climate raises insurance payouts. ",
+        "\u0394\u00e4x < 0: shorter payout horizon reduces annuity cost.\n",
+        "Eurostat EUROPOP2023 + EURO-CORDEX RCP 7.0")
+    ) +
+    ft_theme() +
+    theme(
+      legend.position = "top",
+      panel.spacing   = unit(1.5, "lines")
+    )
+  fname <- sprintf("plots/vig_c5_epv_bar_%d.png", cy)
+  ggsave(fname, p_c5, width = 12, height = 7, dpi = 200, bg = "transparent")
+  cat(sprintf("Saved %s\n", fname))
+}
