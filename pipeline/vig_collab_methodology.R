@@ -41,32 +41,34 @@ suppressPackageStartupMessages({
   library(showtext)
 })
 
-# -- IE Science and Technology + Financial Times colour palette ---------------
-IE_BG     <- "#FFF1E5"  # FT cream background
+# -- IE Science and Technology colour palette (optimised for dark backgrounds) -
 IE_GREEN  <- "#6DC201"  # IE lime green  (primary brand)
-IE_FOREST <- "#1F3700"  # IE dark forest green
-IE_NAVY   <- "#0A005C"  # IE dark navy
-IE_TEAL   <- "#006E8C"  # mid blue-green (IE blue tone)
-IE_DARK   <- "#1A1A1A"  # near-black text
-IE_MID    <- "#5A5A5A"  # mid-grey
-IE_LIGHT  <- "#D9D0C7"  # FT warm grid lines
+IE_CYAN   <- "#00C2FF"  # IE electric blue
+IE_AMBER  <- "#FFB300"  # warm amber
+IE_CORAL  <- "#FF6B6B"  # coral-red
+IE_TEXT   <- "#FFFFFF"  # white text (dark background)
+IE_MID    <- "#AAAAAA"  # mid-grey (subtitles, captions, vlines)
+IE_GRID   <- "#555555"  # subtle dark grid lines
 
 ft_theme <- function() {
   theme_minimal(base_family = "montserrat") +
     theme(
-      plot.background   = element_rect(fill = IE_BG, colour = NA),
-      panel.background  = element_rect(fill = IE_BG, colour = NA),
-      panel.grid.major  = element_line(colour = IE_LIGHT, linewidth = 0.3),
+      plot.background   = element_rect(fill = "transparent", colour = NA),
+      panel.background  = element_rect(fill = "transparent", colour = NA),
+      panel.grid.major  = element_line(colour = IE_GRID, linewidth = 0.4),
       panel.grid.minor  = element_blank(),
-      axis.text         = element_text(colour = IE_DARK, size = 13),
-      axis.title        = element_text(colour = IE_DARK, size = 14, face = "bold"),
-      plot.title        = element_text(colour = IE_NAVY, size = 20, face = "bold",
-                                       margin = margin(b = 6)),
-      plot.subtitle     = element_text(colour = IE_MID, size = 13),
-      plot.caption      = element_text(colour = IE_MID, size = 10),
-      legend.background = element_rect(fill = IE_BG, colour = NA),
-      legend.text       = element_text(colour = IE_DARK, size = 12),
-      legend.title      = element_text(colour = IE_DARK, size = 13, face = "bold")
+      axis.text         = element_text(colour = IE_TEXT, size = 20),
+      axis.title        = element_text(colour = IE_TEXT, size = 22, face = "bold"),
+      plot.title        = element_text(colour = IE_TEXT, size = 30, face = "bold",
+                                       margin = margin(b = 8)),
+      plot.subtitle     = element_text(colour = IE_MID, size = 18),
+      plot.caption      = element_text(colour = IE_MID, size = 14),
+      legend.background = element_rect(fill = "transparent", colour = NA),
+      legend.text       = element_text(colour = IE_TEXT, size = 18),
+      legend.title      = element_text(colour = IE_TEXT, size = 20, face = "bold"),
+      strip.background  = element_rect(fill = "transparent", colour = NA),
+      strip.text        = element_text(colour = IE_TEXT, size = 20, face = "bold"),
+      plot.margin       = margin(15, 15, 15, 15)
     )
 }
 
@@ -266,10 +268,10 @@ epv_long <- rbindlist(list(
 ))
 
 colour_map <- c(
-  "Baseline.Austria"          = IE_NAVY,
+  "Baseline.Austria"          = IE_CYAN,
   "Climate (RCP 7.0).Austria" = IE_GREEN,
-  "Baseline.Romania"          = IE_TEAL,
-  "Climate (RCP 7.0).Romania" = IE_FOREST
+  "Baseline.Romania"          = IE_AMBER,
+  "Climate (RCP 7.0).Romania" = IE_CORAL
 )
 label_map <- c(
   "Baseline.Austria"          = "Austria - Baseline",
@@ -285,10 +287,10 @@ p_ann <- ggplot(age_range,
     aes(x = age, y = ax,
         colour   = interaction(scenario, country),
         linetype = country)) +
-  geom_line(linewidth = 0.9) +
+  geom_line(linewidth = 1.5) +
   geom_vline(xintercept = 65, linetype = "dashed", colour = IE_MID, linewidth = 0.4) +
   annotate("text", x = 66, y = vline_lbl,
-           label = "Age 65", colour = IE_MID, size = 4, family = "montserrat", hjust = 0) +
+           label = "Age 65", colour = IE_MID, size = 6, family = "montserrat", hjust = 0) +
   scale_colour_manual(values = colour_map, labels = label_map, name = NULL) +
   scale_linetype_manual(values = c("Austria" = "solid", "Romania" = "dashed"),
                         guide = "none") +
@@ -303,7 +305,7 @@ p_ins <- ggplot(age_range,
     aes(x = age, y = Ax,
         colour   = interaction(scenario, country),
         linetype = country)) +
-  geom_line(linewidth = 0.9) +
+  geom_line(linewidth = 1.5) +
   geom_vline(xintercept = 65, linetype = "dashed", colour = IE_MID, linewidth = 0.4) +
   scale_colour_manual(values = colour_map, labels = label_map, name = NULL) +
   scale_linetype_manual(values = c("Austria" = "solid", "Romania" = "dashed"),
@@ -319,15 +321,15 @@ p_c1 <- (p_ann / p_ins) +
   plot_annotation(
     title = "Actuarial EPVs under Climate Change",
     subtitle = "Our data (Eurostat + EURO-CORDEX) with collaborator's actuarial framework",
-    theme = theme(plot.background = element_rect(fill = IE_BG, colour = NA),
-                  plot.title    = element_text(family = "montserrat", colour = IE_NAVY,
-                                               size = 22, face = "bold",
-                                               margin = margin(b = 6)),
+    theme = theme(plot.background = element_rect(fill = "transparent", colour = NA),
+                  plot.title    = element_text(family = "montserrat", colour = IE_TEXT,
+                                               size = 32, face = "bold",
+                                               margin = margin(b = 8)),
                   plot.subtitle = element_text(family = "montserrat",
-                                               colour = IE_MID, size = 13))
+                                               colour = IE_MID, size = 18))
   )
 
-ggsave("plots/vig_c1_epv_curves.png", p_c1, width = 10, height = 10, dpi = 200, bg = IE_BG)
+ggsave("plots/vig_c1_epv_curves.png", p_c1, width = 10, height = 10, dpi = 200, bg = "transparent")
 cat("Saved plots/vig_c1_epv_curves.png\n")
 
 # -- C2: Reserve change decomposition at age 65 --------------------------------
@@ -356,14 +358,14 @@ p_c2 <- ggplot(decomp,
     aes(x = component, y = eur_per_M,
         fill = interaction(is_total, eur_per_M >= 0))) +
   geom_col(width = 0.6) +
-  geom_hline(yintercept = 0, colour = IE_DARK, linewidth = 0.4) +
+  geom_hline(yintercept = 0, colour = IE_MID, linewidth = 0.5) +
   geom_text(aes(label = sprintf("%+.0f", eur_per_M),
                 vjust = ifelse(eur_per_M >= 0, -0.4, 1.3)),
-            size = 4, family = "montserrat", colour = IE_DARK) +
+            size = 5, family = "montserrat", colour = IE_TEXT) +
   facet_wrap(~ country) +
   scale_fill_manual(
-    values = c("FALSE.FALSE" = IE_NAVY, "FALSE.TRUE" = IE_TEAL,
-               "TRUE.FALSE"  = IE_FOREST, "TRUE.TRUE"  = IE_GREEN),
+    values = c("FALSE.FALSE" = IE_CORAL, "FALSE.TRUE" = IE_CYAN,
+               "TRUE.FALSE"  = IE_CORAL, "TRUE.TRUE"  = IE_GREEN),
     guide = "none"
   ) +
   labs(
@@ -374,7 +376,53 @@ p_c2 <- ggplot(decomp,
     caption = "unadj: legacy premium retained | adj: premium recalculated at CC mortality"
   ) +
   ft_theme() +
-  theme(axis.text.x = element_text(size = 11))
+  theme(axis.text.x = element_text(size = 16))
 
-ggsave("plots/vig_c2_reserve_decomp.png", p_c2, width = 10, height = 6, dpi = 200, bg = IE_BG)
+ggsave("plots/vig_c2_reserve_decomp.png", p_c2, width = 10, height = 6, dpi = 200, bg = "transparent")
 cat("Saved plots/vig_c2_reserve_decomp.png\n")
+
+# -- C3: % change in EPVs across ages (30-85) ---------------------------------
+pct_dt <- rbindlist(lapply(c("Austria", "Romania"), function(ctry) {
+  nc <- ct_list[[paste0(ctry, "_nc")]][age >= 30 & age <= 85]
+  cc <- ct_list[[paste0(ctry, "_cc")]][age >= 30 & age <= 85]
+  data.table(
+    country = ctry,
+    age     = nc$age,
+    pct_da  = 100 * (cc$ax - nc$ax) / nc$ax,
+    pct_dA  = 100 * (cc$Ax - nc$Ax) / nc$Ax
+  )
+}))
+
+pct_long <- melt(pct_dt, id.vars = c("country", "age"),
+                  measure.vars = c("pct_da", "pct_dA"),
+                  variable.name = "product", value.name = "pct_change")
+pct_long[, product_label := fifelse(product == "pct_da",
+                                     "Annuity (\u00e4x)", "Insurance (Ax)")]
+
+country_cols <- c("Austria" = IE_CYAN, "Romania" = IE_AMBER)
+
+p_c3 <- ggplot(pct_long, aes(x = age, y = pct_change, colour = country)) +
+  geom_line(linewidth = 1.5) +
+  geom_hline(yintercept = 0, colour = IE_MID, linewidth = 0.6, linetype = "dashed") +
+  facet_wrap(~ product_label, ncol = 2, scales = "free_y") +
+  scale_colour_manual(values = country_cols, name = NULL) +
+  scale_y_continuous(labels = function(x) sprintf("%+.2f%%", x)) +
+  labs(
+    title    = "Climate change alters the cost of life products",
+    subtitle = paste0(
+      "% change in EPV under RCP 7.0 vs baseline | period table yr ",
+      target_year, " | i = ", i_rate * 100, "%"),
+    x = "Age", y = "EPV change (%)",
+    caption = paste0(
+      "Higher mortality raises insurance payouts (\u0394Ax > 0) ",
+      "but reduces annuity liabilities (\u0394\u00e4x < 0).\n",
+      "Eurostat EUROPOP2023 + EURO-CORDEX RCP 7.0")
+  ) +
+  ft_theme() +
+  theme(
+    legend.position = "top",
+    panel.spacing   = unit(1.5, "lines")
+  )
+
+ggsave("plots/vig_c3_epv_pct_change.png", p_c3, width = 12, height = 7, dpi = 200, bg = "transparent")
+cat("Saved plots/vig_c3_epv_pct_change.png\n")
