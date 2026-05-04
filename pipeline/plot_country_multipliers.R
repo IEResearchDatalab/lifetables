@@ -111,6 +111,12 @@ ref_val    <- if (use_pct_change) 0 else 1
 mult_label <- if (use_pct_change) function(x) sprintf("%+.1f%%", x) else label_number(accuracy = 0.01)
 mult_title <- if (use_pct_change) "Mortality\nmultiplier (%)" else "Mortality\nmultiplier"
 
+# ── Scenario selection ────────────────────────────────────────────────────────
+# Map RCP codes (no dots) to SSP numbers and labels used in the data.
+# Options: "rcp26" (SSP1-2.6), "rcp45" (SSP2-4.5), "rcp70" (SSP3-7.0)
+rcp_to_ssp   <- c(rcp26 = "1", rcp45 = "2", rcp70 = "3")
+rcp_to_label <- c(rcp26 = "SSP1-2.6", rcp45 = "SSP2-4.5", rcp70 = "SSP3-7.0")
+
 # ── Load pre-computed results ────────────────────────────────────────────────
 
 cat("Loading pre-computed results...\n")
@@ -155,6 +161,15 @@ ts_summary <- ts_gcm[, .(
 ), by = .(country_code, country_name, ssp, ssp_label, year)]
 
 ################################################################################
+# Loop over RCPs — all scenario-dependent figures run for each RCP
+################################################################################
+
+for (rcp in c("rcp26", "rcp70")) {
+  focal_ssp   <- rcp_to_ssp[[rcp]]
+  focal_label <- rcp_to_label[[rcp]]
+  cat(sprintf("\n=== Processing %s (%s) ===\n", rcp, focal_label))
+
+################################################################################
 # Figure 1 — Europe Choropleth Map (2050, 2075, 2099)
 ################################################################################
 
@@ -174,12 +189,12 @@ cntr_sf[["_code"]] <- as.character(cntr_sf[[id_col]])
 
 # Compute a shared symmetric scale limit across all three years so the colour
 # meaning is consistent when comparing panels
-all_map_vals <- results[component == "total" & ssp == "3" &
+all_map_vals <- results[component == "total" & ssp == focal_ssp &
                           year %in% c(2050, 2075, 2099) & age == 65, multiplier]
 map_limit_global <- 10
 
 make_map <- function(yr) {
-  map_data <- results[component == "total" & ssp == "3" & year == yr & age == 65,
+  map_data <- results[component == "total" & ssp == focal_ssp & year == yr & age == 65,
                       .(country_code, country_name, multiplier)]
   map_data[, display_val := mult2val(multiplier)]
 
@@ -222,11 +237,11 @@ make_map <- function(yr) {
     labs(
       title    = "Southern and Eastern Europe face the steepest rise in heat mortality",
       subtitle = sprintf(
-        "Projected mortality multiplier under SSP3-7.0 by %d, relative to 1990\u20132019 baseline (age 65)", yr
+        "Projected mortality multiplier under %s by %d, relative to 1990\u20132019 baseline (age 65)", focal_label, yr
       ),
       caption  = paste0(
         "Method: population-weighted country ERF applied to country-level projected temperatures.\n",
-        "Baseline: 1990\u20132019 pooled GCM ensemble. SSP3-7.0 (+4\u00b0C by 2100)."
+        sprintf("Baseline: 1990\u20132019 pooled GCM ensemble. %s.", focal_label)
       )
     ) +
     theme_pub(base_size = 12) +
@@ -243,14 +258,15 @@ make_map <- function(yr) {
 for (yr in c(2050, 2075, 2099)) {
   cat(sprintf("  year %d\n", yr))
   save_fig(make_map(yr),
-           sprintf("country_map_multiplier_%d_ssp3", yr),
+           sprintf("country_map_multiplier_%d_%s", yr, rcp),
            width = 10, height = 8)
 }
 
 ################################################################################
-# Figure 2 — ERF curves (selected countries, all age groups)
+# Figure 2 — ERF curves (scenario-independent, run only on first RCP pass)
 ################################################################################
 
+if (rcp == "rcp26") {
 cat("\nFigure 2: ERF curves...\n")
 
 # Select 9 representative countries spanning N–S and E–W gradients
@@ -447,6 +463,8 @@ p_erf_ext <- ggplot(erf_extrap,
 
 save_fig(p_erf_ext, "country_erf_curves_extrapolated", width = 11, height = 10)
 
+} # end if (rcp == "rcp26") for ERF figures
+
 ################################################################################
 # Figure 3 — Heat vs cold trade-off scatter (2050, 2075, 2099)
 ################################################################################
@@ -454,11 +472,11 @@ save_fig(p_erf_ext, "country_erf_curves_extrapolated", width = 11, height = 10)
 cat("\nFigure 3: Heat vs cold scatter...\n")
 
 make_hc_scatter <- function(yr) {
-  hc_data <- results[year == yr & ssp == "3" & age == 65 &
+  hc_data <- results[year == yr & ssp == focal_ssp & age == 65 &
                      component %in% c("heat", "cold")]
   hc_wide <- dcast(hc_data, country_code + country_name ~ component,
                    value.var = "multiplier")
-  hc_wide[, total := results[year == yr & ssp == "3" & age == 65 &
+  hc_wide[, total := results[year == yr & ssp == focal_ssp & age == 65 &
                                component == "total" &
                                country_code %in% hc_wide$country_code,
                              .(multiplier, country_code)][
@@ -474,9 +492,9 @@ make_hc_scatter <- function(yr) {
   else
     sprintf("Heat mortality multiplier (%d / baseline)", yr)
   hc_sub <- if (use_pct_change)
-    sprintf("Heat vs cold mortality multiplier by %d under SSP3-7.0, age 65.\nValues > 0%% = increased burden relative to 1990-2019 baseline.", yr)
+    sprintf("Heat vs cold mortality multiplier by %d under %s, age 65.\nValues > 0%% = increased burden relative to 1990-2019 baseline.", yr, focal_label)
   else
-    sprintf("Change in heat vs cold mortality multiplier by %d under SSP3-7.0, age 65.\nValues > 1 = increased burden relative to 1990-2019 baseline.", yr)
+    sprintf("Change in heat vs cold mortality multiplier by %d under %s, age 65.\nValues > 1 = increased burden relative to 1990-2019 baseline.", yr, focal_label)
 
   ggplot(hc_wide, aes(x = cold, y = heat)) +
     geom_vline(xintercept = ref_val, linewidth = 0.4, colour = "#cccccc") +
@@ -524,7 +542,7 @@ for (yr in c(2050, 2075, 2099)) {
   cat(sprintf("  year %d\n", yr))
   p_hc_yr <- make_hc_scatter(yr)
   if (yr == 2050) p_hc <- p_hc_yr  # keep for combined panel
-  save_fig(p_hc_yr, sprintf("country_heat_cold_scatter_%d", yr), width = 9, height = 8)
+  save_fig(p_hc_yr, sprintf("country_heat_cold_scatter_%d_%s", yr, rcp), width = 9, height = 8)
 }
 
 ################################################################################
@@ -553,8 +571,8 @@ ts_smooth[, q90    := roll5(q90),    by = .(country_code, ssp)]
 highlight <- c("FI", "DE", "FR", "IT", "ES", "RO", "PL", "EL")
 highlight_names <- country_names[highlight]
 
-# Background: SSP3 only, all non-highlighted countries — smoothed median
-ts_bg <- ts_smooth[!(country_code %in% highlight) & ssp == "3"]
+# Background: focal SSP only, all non-highlighted countries — smoothed median
+ts_bg <- ts_smooth[!(country_code %in% highlight) & ssp == focal_ssp]
 ts_hl <- ts_smooth[country_code %in% highlight]
 
 ts_hl[, country_name := factor(country_name, levels = highlight_names)]
@@ -599,10 +617,10 @@ p_ts <- ggplot() +
   geom_line(data = ts_eu_d,
             aes(x = year, y = median, colour = ssp_label),
             linewidth = 1.15) +
-  # Highlighted countries (SSP3 only for legibility)
-  geom_line(data = ts_hl_d[ssp == "3"],
+  # Highlighted countries (focal SSP only for legibility)
+  geom_line(data = ts_hl_d[ssp == focal_ssp],
             aes(x = year, y = median, group = country_name),
-            colour = ssp_palette[["SSP3-7.0"]],
+            colour = ssp_palette[[focal_label]],
             linewidth = 0.55, alpha = 0.65) +
   # End-of-century labels (nudged to avoid overlap)
   geom_text(data = ts_eu_labels_d,
@@ -626,13 +644,13 @@ p_ts <- ggplot() +
     ),
     x        = NULL,
     y        = if (use_pct_change) "Mortality multiplier (%)" else "Mortality multiplier",
-    caption  = paste0("GCM ensemble of 19 models pooled. Grey lines = individual countries under SSP3-7.0.\n",
-                      "Highlighted coloured lines = selected countries (FI, DE, FR, IT, ES, RO, PL, EL) under SSP3-7.0.")
+    caption  = paste0("GCM ensemble of 19 models pooled. Grey lines = individual countries under ", focal_label, ".\n",
+                      "Highlighted coloured lines = selected countries (FI, DE, FR, IT, ES, RO, PL, EL) under ", focal_label, ".")
   ) +
   theme_pub(base_size = 12) +
   theme(legend.position = "bottom")
 
-save_fig(p_ts, "country_multiplier_timeseries", width = 10, height = 6.5)
+save_fig(p_ts, sprintf("country_multiplier_timeseries_%s", rcp), width = 10, height = 6.5)
 
 ################################################################################
 # Figure 5 — Combined panel (journal-ready)
@@ -659,7 +677,7 @@ p_combined <- (p_map_2050 | p_hc) /
   ) +
   plot_layout(heights = c(1.2, 1.5))
 
-save_fig(p_combined, "country_combined_panel", width = 16, height = 22)
+save_fig(p_combined, sprintf("country_combined_panel_%s", rcp), width = 16, height = 22)
 
 ################################################################################
 # Figure 6 — Age-gradient heatmap (countries × age groups) (2050, 2075, 2099)
@@ -669,7 +687,7 @@ cat("\nFigure 6: Age-gradient heatmap...\n")
 
 make_heatmap <- function(yr) {
   hmd <- results[
-    component == "total" & ssp == "3" & year == yr &
+    component == "total" & ssp == focal_ssp & year == yr &
       age %in% c(32, 55, 67, 80, 90),
     .(country_code, country_name, age, multiplier)
   ]
@@ -710,7 +728,7 @@ make_heatmap <- function(yr) {
     labs(
       title    = "Older Europeans face exponentially higher mortality multipliers",
       subtitle = sprintf(
-        "Total mortality multiplier at %d under SSP3-7.0 by country and age group.\nCountries sorted by multiplier at age 65–74.", yr
+        "Total mortality multiplier at %d under %s by country and age group.\nCountries sorted by multiplier at age 65\u201374.", yr, focal_label
       ),
       x       = "Age group",
       y       = NULL,
@@ -726,9 +744,11 @@ make_heatmap <- function(yr) {
 
 for (yr in c(2050, 2075, 2099)) {
   cat(sprintf("  year %d\n", yr))
-  save_fig(make_heatmap(yr), sprintf("country_multiplier_heatmap_%d", yr),
+  save_fig(make_heatmap(yr), sprintf("country_multiplier_heatmap_%d_%s", yr, rcp),
            width = 8, height = 11)
 }
+
+} # end for (rcp in c("rcp26", "rcp70"))
 
 cat("\nAll figures saved to plots/\n")
 cat("Files produced:\n")
