@@ -166,23 +166,34 @@ ipcc_models <- list(
   `NorESM2-MM`       = "r1i1p1f1"
 )
 
-BASE_URL <- paste0(
+BASE_URL   <- paste0(
   "https://raw.githubusercontent.com/IPCC-WG1/Atlas/main/",
   "datasets-aggregated-regionally/data/CMIP6/CMIP6_tas_land/"
 )
+CACHE_DIR  <- "data/ipcc_atlas_cmip6"
+dir.create(CACHE_DIR, showWarnings = FALSE, recursive = TRUE)
 
 fetch_ipcc <- function(model, run, scenario) {
-  fname <- sprintf("CMIP6_%s_%s_%s.csv", model, scenario, run)
-  url   <- paste0(BASE_URL, fname)
-  resp  <- tryCatch(GET(url, timeout(60)), error = function(e) NULL)
-  if (is.null(resp) || status_code(resp) != 200) {
-    message("  SKIP ", fname,
-            " (", if (!is.null(resp)) status_code(resp) else "error", ")")
-    return(NULL)
+  fname      <- sprintf("CMIP6_%s_%s_%s.csv", model, scenario, run)
+  cache_path <- file.path(CACHE_DIR, fname)
+
+  # Use cached file if it exists
+  if (file.exists(cache_path)) {
+    txt <- readLines(cache_path, warn = FALSE)
+  } else {
+    url  <- paste0(BASE_URL, fname)
+    resp <- tryCatch(GET(url, timeout(60)), error = function(e) NULL)
+    if (is.null(resp) || status_code(resp) != 200) {
+      message("  SKIP ", fname,
+              " (", if (!is.null(resp)) status_code(resp) else "error", ")")
+      return(NULL)
+    }
+    txt <- strsplit(content(resp, "text", encoding = "UTF-8"), "\n")[[1]]
+    writeLines(txt, cache_path)
+    cat("  Downloaded and cached:", fname, "\n")
   }
-  txt   <- content(resp, "text", encoding = "UTF-8")
-  lines <- strsplit(txt, "\n")[[1]]
-  lines <- lines[!startsWith(trimws(lines), "#")]
+
+  lines <- txt[!startsWith(trimws(txt), "#")]
   tryCatch(
     fread(text = paste(lines, collapse = "\n"), header = TRUE, data.table = TRUE),
     error = function(e) { message("  PARSE ERROR ", fname); NULL }
@@ -197,7 +208,8 @@ region_annual_mean <- function(dt, region_col, years) {
   mean(sub[[region_col]], na.rm = TRUE)
 }
 
-cat("[2/4] Downloading IPCC Atlas CMIP6 files for EEU and MED regions...\n")
+cat("[2/4] Loading IPCC Atlas CMIP6 files for EEU and MED regions...\n")
+cat("  (cache dir:", CACHE_DIR, "— downloads only if file not cached)\n")
 cat("  (", length(ipcc_models), "models × 2 scenarios, computing",
     length(periods), "periods each)\n")
 
