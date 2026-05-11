@@ -76,4 +76,4 @@ vignettes/*.pdf
 .Renviron
 
 context/
-cordex_data/data/ipcc_atlas_cmip6/
+cordex_data/
