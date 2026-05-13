@@ -5,6 +5,7 @@
 ##
 ## Baseline     : 2000-2025 (26 years, CMIP6 historical 2000-2014 + scenario-own extension 2015-2025)
 ##                RCP2.6 baseline = hist + SSP1-2.6 (2015-2025)
+##                RCP4.5 baseline = hist + SSP2-4.5 (2015-2025)
 ##                RCP7.0 baseline = hist + SSP3-7.0 (2015-2025)
 ## Periods      : 2030-2050 | 2051-2070 | 2071-2099
 ## Delta_T      : ensemble-mean future annual-mean T minus ensemble-mean baseline T
@@ -113,8 +114,8 @@ rm(hist_raw); gc()
 #   (b) compute the mean for each future period
 # This ensures each scenario's delta_T is 100% self-contained (no cross-scenario mixing)
 eu_delta <- list()
-for (ssp_code in c("1", "3")) {
-  ssp_short <- if (ssp_code == "1") "rcp26" else "rcp70"
+for (ssp_code in c("1", "2", "3")) {
+  ssp_short <- switch(ssp_code, "1" = "rcp26", "2" = "rcp45", "3" = "rcp70")
   cat(sprintf("  Computing EU deltas for SSP%s (baseline: hist + SSP%s 2015-2025)...\n",
               ssp_code, ssp_code))
   fut_raw <- ds |> filter(ssp == ssp_code) |> collect()  # full SSP run for this scenario
@@ -242,7 +243,7 @@ region_annual_mean <- function(dt, region_col, years) {
 }
 
 cat("[2/4] Downloading IPCC Atlas CMIP6 files for EEU and MED regions...\n")
-cat("  (", length(ipcc_models), "models \u00d7 3 files each: historical + ssp126 + ssp370)\n")
+cat("  (", length(ipcc_models), "models \u00d7 4 files each: historical + ssp126 + ssp245 + ssp370)\n")
 
 noeu_results <- list()  # will accumulate one row per (model, scenario, region, period)
 
@@ -261,10 +262,10 @@ for (mdl in names(ipcc_models)) {
   hist_MED <- region_annual_mean(hist_dt, "MED", hist_yrs)
   rm(hist_dt)
 
-  for (scen_ipcc in c("ssp126", "ssp370")) {
+  for (scen_ipcc in c("ssp126", "ssp245", "ssp370")) {
     fut_dt <- fetch_ipcc(mdl, run, scen_ipcc)  # SSP run starts from 2015
     if (is.null(fut_dt)) next
-    rcp_label <- if (scen_ipcc == "ssp126") "RCP2.6" else "RCP7.0"
+    rcp_label <- switch(scen_ipcc, ssp126 = "RCP2.6", ssp245 = "RCP4.5", ssp370 = "RCP7.0")
 
     # Build scenario-specific 2000-2025 baseline:
     #   base_T = weighted mean of hist(2000-2014) + this SSP's 2015-2025
@@ -311,8 +312,8 @@ noeu_wide_rows <- lapply(seq_len(nrow(vig_noeu)), function(j) {
   for (i in seq_along(periods)) {
     psuffix <- period_suffixes[i]
     pname   <- period_names[i]
-    for (ssp_label in c("RCP2.6", "RCP7.0")) {
-      ssp_short <- if (ssp_label == "RCP2.6") "rcp26" else "rcp70"
+    for (ssp_label in c("RCP2.6", "RCP4.5", "RCP7.0")) {
+      ssp_short <- switch(ssp_label, "RCP2.6" = "rcp26", "RCP4.5" = "rcp45", "RCP7.0" = "rcp70")
       col <- paste0("delta_", ssp_short, "_", psuffix)
       val <- noeu_region_mean[region == reg & scenario == ssp_label & period == pname,
                               delta_T_mean]
@@ -328,9 +329,10 @@ cat("  Done. Non-EU VIG markets:", nrow(noeu_wide), "\n")
 # ---- 3. COMBINE --------------------------------------------------------
 cat("[3/4] Combining results...\n")
 
-# Column order: interleaved rcp26 / rcp70 per period
+# Column order: interleaved rcp26 / rcp45 / rcp70 per period
 delta_cols <- c(rbind(
   paste0("delta_rcp26_", period_suffixes),
+  paste0("delta_rcp45_", period_suffixes),
   paste0("delta_rcp70_", period_suffixes)
 ))
 
@@ -374,7 +376,11 @@ plot_dt <- melt(
 )
 
 # Parse scenario and period labels from column name
-plot_dt[, scenario_label := fifelse(grepl("_rcp26_", col_id), "RCP 2.6", "RCP 7.0")]
+plot_dt[, scenario_label := fcase(
+  grepl("_rcp26_", col_id), "RCP 2.6",
+  grepl("_rcp45_", col_id), "RCP 4.5",
+  grepl("_rcp70_", col_id), "RCP 7.0"
+)]
 plot_dt[, period_label := fcase(
   grepl("2030_2050", col_id), "2030\u20132050",
   grepl("2051_2070", col_id), "2051\u20132070",
@@ -480,10 +486,13 @@ map_colours <- c("#FFFDE7", "#FF9800", "#B71C1C")
 
 map_specs <- list(
   list(col = "delta_rcp26_2030_2050", scenario = "RCP 2.6", period = "2030\u20132050"),
+  list(col = "delta_rcp45_2030_2050", scenario = "RCP 4.5", period = "2030\u20132050"),
   list(col = "delta_rcp70_2030_2050", scenario = "RCP 7.0", period = "2030\u20132050"),
   list(col = "delta_rcp26_2051_2070", scenario = "RCP 2.6", period = "2051\u20132070"),
+  list(col = "delta_rcp45_2051_2070", scenario = "RCP 4.5", period = "2051\u20132070"),
   list(col = "delta_rcp70_2051_2070", scenario = "RCP 7.0", period = "2051\u20132070"),
   list(col = "delta_rcp26_2071_2099", scenario = "RCP 2.6", period = "2071\u20132099"),
+  list(col = "delta_rcp45_2071_2099", scenario = "RCP 4.5", period = "2071\u20132099"),
   list(col = "delta_rcp70_2071_2099", scenario = "RCP 7.0", period = "2071\u20132099")
 )
 
@@ -517,7 +526,7 @@ for (m in map_specs) {
     coord_sf(xlim = c(-25, 45), ylim = c(30, 72), expand = FALSE) +
     labs(
       title    = paste0(m$scenario, "  \u2014  ", m$period),
-      subtitle = "Ensemble-mean \u0394T vs 2000\u20132025 baseline | Scenario-own CMIP6 ensemble",
+      subtitle = "Ensemble-mean \u0394T vs 2000\u20132025 baseline",
       caption  = paste0(
         "EU/EEA: EURO-CORDEX CMIP6, population-weighted. ",
         "Non-EU VIG: IPCC AR6 Atlas regional means (EEU or MED). ",
