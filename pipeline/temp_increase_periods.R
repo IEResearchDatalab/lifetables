@@ -3,7 +3,9 @@
 ## EU/EEA countries (30): internal pipeline (population-weighted, bias-corrected)
 ## Non-EU VIG markets  :  IPCC AR6 Atlas CMIP6 (area-weighted, raw model output)
 ##
-## Baseline     : 1990-2014 (25 years)
+## Baseline     : 2000-2025 (26 years, CMIP6 historical 2000-2014 + scenario-own extension 2015-2025)
+##                RCP2.6 baseline = hist + SSP1-2.6 (2015-2025)
+##                RCP7.0 baseline = hist + SSP3-7.0 (2015-2025)
 ## Periods      : 2030-2050 | 2051-2070 | 2071-2099
 ## Delta_T      : ensemble-mean future annual-mean T minus ensemble-mean baseline T
 ## -------------------------------------------------------
@@ -22,10 +24,12 @@
 ##     Note: ME and MK are classified MED because they drain to the Adriatic/Aegean
 ##     and share Mediterranean climate characteristics (~42-41°N).
 ##
-##  3. METHODOLOGICAL INCONSISTENCY:
+##  3. METHODOLOGICAL NOTE:
 ##     - EU data:     bias-corrected, 0.11° EURO-CORDEX downscaling, population-weighted
 ##     - Non-EU data: raw global CMIP6 output, cosine-latitude weighted, regional mean
-##     These two sources are NOT directly comparable.
+##     Baseline = CMIP6 historical (2000-2014) spliced with the scenario's own run
+##     (2015-2025): RCP2.6 uses SSP1-2.6, RCP7.0 uses SSP3-7.0. Each scenario is
+##     fully self-contained. Delta_T is internally consistent (no obs/model mismatch).
 ##
 ##  4. RCP 2.6 non-monotonic pattern is PHYSICALLY CORRECT: SSP1-2.6 features
 ##     net-negative emissions after ~2050, causing temperatures to peak mid-century
@@ -56,8 +60,14 @@ showtext_opts(dpi = 180)
 set.seed(42)
 
 # ---- Parameters --------------------------------------------------------
-baseline_yrs <- 1990:2014
+# Baseline period: CMIP6 historical run covers 1850-2014 and SSP runs start
+# from 2015. We splice hist (2000-2014) with the scenario's own SSP run
+# (2015-2025) to form a modern 26-year reference period per scenario.
+hist_yrs     <- 2000:2014              # covered by CMIP6 'historical' run
+ssp2_yrs     <- 2015:2025              # 2015-2025 taken from each scenario's own SSP run
+baseline_yrs <- c(hist_yrs, ssp2_yrs) # full reference period: 2000-2025
 
+# Future comparison periods
 periods <- list(
   "2030-2050" = 2030:2050,
   "2051-2070" = 2051:2070,
@@ -67,31 +77,56 @@ period_names    <- names(periods)
 period_suffixes <- gsub("-", "_", period_names)   # "2030_2050" etc.
 
 # ---- Helper: ensemble daily mean -> annual mean over given years --------
+# Takes a collected data.table (rows = daily observations, cols include GCM
+# temperature columns and a 'date' column), averages across GCMs to form an
+# ensemble mean for each day, then returns the annual mean for the requested
+# years, aggregated by URAU_CODE (2-letter country ISO code in this dataset).
 agg_period_fn <- function(dt_collected, years, gcms) {
   dt <- as.data.table(dt_collected)
-  dt[, ensemble_T := rowMeans(.SD, na.rm = TRUE), .SDcols = gcms]
+  dt[, ensemble_T := rowMeans(.SD, na.rm = TRUE), .SDcols = gcms]  # cross-GCM mean per day
   dt[, year := as.integer(format(as.Date(date), "%Y"))]
   dt[year %in% years,
-     .(mean_T = mean(ensemble_T, na.rm = TRUE)),
+     .(mean_T = mean(ensemble_T, na.rm = TRUE)),  # annual mean across all days in window
      by = URAU_CODE]
 }
 
 # ---- 1. EU COUNTRIES from internal pipeline ----------------------------
+# Source: data/tmeanproj_country.parquet
+#   - Rows: one per country-day combination
+#   - URAU_CODE: 2-letter ISO country code (EU Urban Audit convention)
+#   - ssp: "hist" = CMIP6 historical run (up to 2014),
+#          "1" = SSP1-2.6, "2" = SSP2-4.5, "3" = SSP3-7.0 (from 2015)
+#   - tas_*: per-GCM surface air temperature (K), bias-corrected, 0.11° grid,
+#            population-weighted city means aggregated to national level
 cat("[1/4] Loading internal parquet...\n")
 ds       <- open_dataset("data/tmeanproj_country.parquet")
-gcm_cols <- grep("^tas_", names(ds), value = TRUE)
+gcm_cols <- grep("^tas_", names(ds), value = TRUE)  # identify GCM temperature columns
 
-# historical baseline
-hist_raw <- ds |> filter(ssp == "hist") |> collect()
-eu_base  <- agg_period_fn(hist_raw, baseline_yrs, gcm_cols)
+# Load historical run once; 2000-2014 slice is the common hist component of both baselines
+cat("  Loading CMIP6 historical for EU baseline...\n")
+hist_raw  <- ds |> filter(ssp == "hist") |> collect()
+eu_base_h <- agg_period_fn(hist_raw, hist_yrs, gcm_cols)  # country means 2000-2014
 rm(hist_raw); gc()
 
-# For each scenario, load once and compute all three period deltas
+# For each scenario, load the full SSP run once and:
+#   (a) extract 2015-2025 to complete the scenario-specific baseline
+#   (b) compute the mean for each future period
+# This ensures each scenario's delta_T is 100% self-contained (no cross-scenario mixing)
 eu_delta <- list()
 for (ssp_code in c("1", "3")) {
   ssp_short <- if (ssp_code == "1") "rcp26" else "rcp70"
-  cat(sprintf("  Computing EU deltas for SSP%s...\n", ssp_code))
-  fut_raw <- ds |> filter(ssp == ssp_code) |> collect()
+  cat(sprintf("  Computing EU deltas for SSP%s (baseline: hist + SSP%s 2015-2025)...\n",
+              ssp_code, ssp_code))
+  fut_raw <- ds |> filter(ssp == ssp_code) |> collect()  # full SSP run for this scenario
+
+  # Weighted splice: combine hist and SSP means proportional to number of years
+  base_s  <- agg_period_fn(fut_raw, ssp2_yrs, gcm_cols)  # 2015-2025 from this scenario
+  eu_base <- merge(eu_base_h, base_s, by = "URAU_CODE", suffixes = c("_h", "_s"))
+  eu_base[, mean_T := (mean_T_h * length(hist_yrs) + mean_T_s * length(ssp2_yrs)) /
+                       length(baseline_yrs)]  # weighted mean => 2000-2025 baseline T
+  eu_base <- eu_base[, .(URAU_CODE, mean_T)]
+
+  # Compute delta_T for each future period
   for (i in seq_along(periods)) {
     fut_mean <- agg_period_fn(fut_raw, periods[[i]], gcm_cols)
     merged   <- merge(eu_base, fut_mean, by = "URAU_CODE",
@@ -101,11 +136,11 @@ for (ssp_code in c("1", "3")) {
     eu_delta[[col]] <- merged[, .(URAU_CODE, delta_T)]
     setnames(eu_delta[[col]], "delta_T", col)
   }
-  rm(fut_raw); gc()
+  rm(fut_raw, base_s, eu_base); gc()
 }
 
-# Merge all columns into one wide table
-eu_wide <- eu_base[, .(country_code = URAU_CODE)]
+# Merge all six delta columns into one wide table
+eu_wide <- eu_delta[[1]][, .(country_code = URAU_CODE)]
 for (col in names(eu_delta)) {
   tmp <- copy(eu_delta[[col]])
   setnames(tmp, "URAU_CODE", "country_code")
@@ -131,17 +166,20 @@ eu_wide <- eu_wide[!is.na(country_name)]
 cat("  Done. EU countries:", nrow(eu_wide), "\n")
 
 # ---- 2. NON-EU VIG MARKETS from IPCC AR6 Atlas CMIP6 ------------------
+# Source: IPCC AR6 Interactive Atlas GitHub repository
+#   https://github.com/IPCC-WG1/Atlas/tree/main/datasets-aggregated-regionally/
+# The Atlas provides pre-aggregated monthly land temperatures per CMIP6 model
+# for IPCC AR6 reference regions. Each CSV covers one model x scenario x run.
+#
+# Region assignments follow official IPCC AR6 WGI definitions:
+#   MED (Mediterranean): TR, AL, ME (~42.5°N, Adriatic coast), MK (~41.6°N, Aegean)
+#   EEU (Eastern Europe): RS (~44°N, Danube), UA (~49°N), BA (~44°N), MD (~47°N)
+# IMPORTANT: all countries within a region receive IDENTICAL estimates because
+# the Atlas provides no sub-regional differentiation within each reference region.
 vig_noeu <- data.table(
   country_code = c("TR", "RS", "UA", "BA", "MD", "MK", "ME", "AL"),
   country_name = c("Turkey", "Serbia", "Ukraine", "Bosnia and Herzegovina",
                    "Moldova", "North Macedonia", "Montenegro", "Albania"),
-  # IPCC AR6 reference region assignments:
-  # MED = Mediterranean: TR (Mediterranean coast), AL (Adriatic/Ionian),
-  #       ME (Adriatic coast, ~42.5°N), MK (Aegean watershed, ~41.6°N)
-  # EEU = Eastern Europe: RS (Danube basin, ~44°N), UA (~49°N continental),
-  #       BA (inland Balkans, ~44°N), MD (~47°N, steppe)
-  # NOTE: all countries within the same region receive IDENTICAL warming values
-  # because the IPCC Atlas provides no sub-regional differentiation.
   ipcc_region  = c("MED", "EEU", "EEU", "EEU", "EEU", "MED", "MED", "MED")
 )
 
@@ -171,6 +209,10 @@ BASE_URL <- paste0(
   "datasets-aggregated-regionally/data/CMIP6/CMIP6_tas_land/"
 )
 
+# Download one IPCC Atlas CSV for a given model/scenario/run combination.
+# Returns a data.table with columns: date (YYYY-MM-DD), and one column per
+# IPCC reference region (e.g. EEU, MED, NEU, WCE...) with monthly land-mean
+# surface air temperature (°C). Returns NULL on HTTP error or parse failure.
 fetch_ipcc <- function(model, run, scenario) {
   fname <- sprintf("CMIP6_%s_%s_%s.csv", model, scenario, run)
   url   <- paste0(BASE_URL, fname)
@@ -182,13 +224,15 @@ fetch_ipcc <- function(model, run, scenario) {
   }
   txt   <- content(resp, "text", encoding = "UTF-8")
   lines <- strsplit(txt, "\n")[[1]]
-  lines <- lines[!startsWith(trimws(lines), "#")]
+  lines <- lines[!startsWith(trimws(lines), "#")]  # strip comment header rows
   tryCatch(
     fread(text = paste(lines, collapse = "\n"), header = TRUE, data.table = TRUE),
     error = function(e) { message("  PARSE ERROR ", fname); NULL }
   )
 }
 
+# Compute the mean temperature for a given IPCC region column over the requested
+# years (filters by the first 4 chars of the 'date' field, i.e. the year).
 region_annual_mean <- function(dt, region_col, years) {
   if (is.null(dt) || !(region_col %in% names(dt))) return(NA_real_)
   dt2 <- copy(dt)
@@ -198,25 +242,42 @@ region_annual_mean <- function(dt, region_col, years) {
 }
 
 cat("[2/4] Downloading IPCC Atlas CMIP6 files for EEU and MED regions...\n")
-cat("  (", length(ipcc_models), "models × 2 scenarios, computing",
-    length(periods), "periods each)\n")
+cat("  (", length(ipcc_models), "models \u00d7 3 files each: historical + ssp126 + ssp370)\n")
 
-noeu_results <- list()
+noeu_results <- list()  # will accumulate one row per (model, scenario, region, period)
 
 for (mdl in names(ipcc_models)) {
   run <- ipcc_models[[mdl]]
   cat("  Model:", mdl, "\n")
+
+  # Historical run covers 1850-2014; extract the 2000-2014 regional means once
+  # (shared component of both scenario baselines for this model)
   hist_dt <- fetch_ipcc(mdl, run, "historical")
-  if (is.null(hist_dt)) next
+  if (is.null(hist_dt)) {
+    message("  SKIP model (no historical): ", mdl)
+    next
+  }
+  hist_EEU <- region_annual_mean(hist_dt, "EEU", hist_yrs)
+  hist_MED <- region_annual_mean(hist_dt, "MED", hist_yrs)
+  rm(hist_dt)
 
   for (scen_ipcc in c("ssp126", "ssp370")) {
-    fut_dt <- fetch_ipcc(mdl, run, scen_ipcc)
+    fut_dt <- fetch_ipcc(mdl, run, scen_ipcc)  # SSP run starts from 2015
     if (is.null(fut_dt)) next
     rcp_label <- if (scen_ipcc == "ssp126") "RCP2.6" else "RCP7.0"
 
+    # Build scenario-specific 2000-2025 baseline:
+    #   base_T = weighted mean of hist(2000-2014) + this SSP's 2015-2025
+    # Then compute delta_T = future_period_mean - base_T for each period
     for (reg in c("EEU", "MED")) {
-      base_T <- region_annual_mean(hist_dt, reg, baseline_yrs)
-      if (is.na(base_T)) next
+      hist_T <- if (reg == "EEU") hist_EEU else hist_MED
+      if (is.na(hist_T)) next
+      scen_T <- region_annual_mean(fut_dt, reg, ssp2_yrs)
+      base_T <- if (!is.na(scen_T)) {
+        (hist_T * length(hist_yrs) + scen_T * length(ssp2_yrs)) / length(baseline_yrs)
+      } else {
+        hist_T  # fallback to hist-only if 2015-2025 unavailable
+      }
 
       for (pname in period_names) {
         fut_T <- region_annual_mean(fut_dt, reg, periods[[pname]])
@@ -273,9 +334,9 @@ delta_cols <- c(rbind(
   paste0("delta_rcp70_", period_suffixes)
 ))
 
-eu_sub   <- eu_wide[,   c("country_code", "country_name", delta_cols, "source"),
+eu_sub   <- eu_wide[,   c("country_code", "country_name", delta_cols),
                     with = FALSE]
-noeu_sub <- noeu_wide[, c("country_code", "country_name", delta_cols, "source"),
+noeu_sub <- noeu_wide[, c("country_code", "country_name", delta_cols),
                        with = FALSE]
 
 combined <- rbindlist(list(eu_sub, noeu_sub), fill = TRUE)
@@ -291,7 +352,7 @@ dir.create("results_csv", showWarnings = FALSE)
 dir.create("plots",       showWarnings = FALSE)
 
 ## 4a. CSV (wide: one row per country, interleaved rcp26/rcp70 columns per period)
-fwrite(combined[, c("country_code", "country_name", delta_cols, "source"),
+fwrite(combined[, c("country_code", "country_name", delta_cols),
                 with = FALSE],
        "results_csv/temp_increase_periods.csv")
 cat("  Saved: results_csv/temp_increase_periods.csv\n")
@@ -358,7 +419,7 @@ gg <- ggplot(plot_dt,
   scale_x_discrete(position = "top", expand = c(0, 0)) +
   facet_wrap(~period_label, nrow = 1) +
   labs(
-    title    = "Average Temperature Increase vs 1990\u20132014 Baseline",
+    title    = "Average Temperature Increase vs 2000\u20132025 Baseline",
     subtitle = "Ensemble-mean \u0394T by period | Countries sorted north to south",
     x = NULL, y = NULL,
     caption  = paste0(
@@ -399,8 +460,6 @@ ggsave(out_png, gg,
        width  = 18,
        height = max(7, n_countries * 0.42 + 4),
        dpi    = 180, bg = "white")
-cat("  Saved:", out_png, "\n")
-
 cat("  Saved:", out_png, "\n")
 
 ## 4c. Maps: one PNG per scenario x period, with country delta_T labels
@@ -458,7 +517,7 @@ for (m in map_specs) {
     coord_sf(xlim = c(-25, 45), ylim = c(30, 72), expand = FALSE) +
     labs(
       title    = paste0(m$scenario, "  \u2014  ", m$period),
-      subtitle = "Ensemble-mean \u0394T vs 1990\u20132014 baseline",
+      subtitle = "Ensemble-mean \u0394T vs 2000\u20132025 baseline | Scenario-own CMIP6 ensemble",
       caption  = paste0(
         "EU/EEA: EURO-CORDEX CMIP6, population-weighted. ",
         "Non-EU VIG: IPCC AR6 Atlas regional means (EEU or MED). ",
