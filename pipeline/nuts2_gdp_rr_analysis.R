@@ -68,7 +68,7 @@ age_range     <- 20:100
 
 baseline_years  <- 1990:2019
 focus_ssps      <- c("2", "3")   # SSP2-4.5 and SSP3-7.0
-focus_period    <- 2031:2060     # 30-year window (symmetric with 1990-2019 baseline)
+focus_period    <- 2030:2059     # 30-year window (symmetric with 1990-2019 baseline)
 focus_agegroup  <- "65-74"
 components      <- c("heat", "cold", "total")
 
@@ -590,19 +590,28 @@ make_scatter_pages <- function(plot_dt, comp, ssp_val) {
   x_lab    <- make_metric_label()
   ssp_lbl  <- ssp_labels[ssp_val]
   y_lab <- sprintf(
-    "%s-mortality multiplier\n(%s, %s vs 1990-2019 ERA5, age %s)",
+    "%s-mortality change (%%)
+(%s, %s vs 1990-2019 ERA5, age %s)",
     tools::toTitleCase(comp), ssp_lbl, period_lbl, focus_agegroup
   )
   caption_txt <- paste(
-    paste0("Multiplier = mean RR(", ssp_lbl, " ", period_lbl, ", ",
-           length(gcm_cols), " GCMs) / mean RR(1990-2019 ERA5 baseline)",
+    paste0("% change = 100 \u00d7 (mean RR(", ssp_lbl, " ", period_lbl, ", ",
+           length(gcm_cols), " GCMs) / mean RR(1990-2019 ERA5 baseline) \u2212 1)",
            "  |  Error bars = 5th\u201395th pct across GCMs"),
     src_era5, src_proj, src_gdp, src_coefs,
     sep = "\n"
   )
 
+  # Convert multiplier ratio → percentage change
+  sub_dt <- copy(sub_dt)
+  sub_dt[, `:=`(multiplier     = (multiplier     - 1) * 100,
+                multiplier_p05 = (multiplier_p05 - 1) * 100,
+                multiplier_p95 = (multiplier_p95 - 1) * 100)]
+
   y_range <- range(c(sub_dt$multiplier_p05, sub_dt$multiplier_p95), na.rm = TRUE)
-  y_lims  <- c(floor(y_range[1] * 20) / 20, ceiling(y_range[2] * 20) / 20)
+  y_lims  <- c(floor(y_range[1]), ceiling(y_range[2]))
+
+  pct_label <- function(x) sprintf("%+.0f%%", x)
 
   # Plot A: all cities combined
   p_all <- ggplot(sub_dt, aes(gdp_pps, multiplier,
@@ -616,11 +625,11 @@ make_scatter_pages <- function(plot_dt, comp, ssp_val) {
     scale_colour_manual(values = cluster_colors, labels = clbl,
                         name = "Temperature\ncluster") +
     scale_x_continuous(name = x_lab) +
-    scale_y_continuous(name = y_lab, limits = y_lims) +
-    geom_hline(yintercept = 1, linetype = "dotted", colour = "grey40") +
+    scale_y_continuous(name = y_lab, limits = y_lims, labels = pct_label) +
+    geom_hline(yintercept = 0, linetype = "dotted", colour = "grey40") +
     labs(
       title = sprintf(
-        "%s vs %s-mortality multiplier — all cities (%s, %s)",
+        "%s vs %s-mortality change — all cities (%s, %s)",
         metric$short, comp, nuts_lbl, ssp_lbl),
       subtitle = sprintf(
         "%s at %s level (spatial join). Clusters = k-means on ERA5 p10/p75/p90, k=%d. Error bars = 5th\u201395th pct across GCMs.",
@@ -641,13 +650,13 @@ make_scatter_pages <- function(plot_dt, comp, ssp_val) {
     geom_smooth(method = "lm", se = TRUE,
                 linewidth = 0.8, alpha = 0.15, colour = "black") +
     geom_text_repel(size = 1.6, max.overlaps = 10, segment.colour = "grey70") +
-    geom_hline(yintercept = 1, linetype = "dotted", colour = "grey40") +
+    geom_hline(yintercept = 0, linetype = "dotted", colour = "grey40") +
     scale_colour_manual(values = cluster_colors, guide = "none") +
     scale_x_continuous(name = x_lab) +
-    scale_y_continuous(name = y_lab, limits = y_lims) +
+    scale_y_continuous(name = y_lab, limits = y_lims, labels = pct_label) +
     facet_wrap(~cluster, labeller = as_labeller(clbl), scales = "fixed") +
     labs(
-      title    = sprintf("%s vs %s-mortality multiplier by cluster (%s, %s)",
+      title    = sprintf("%s vs %s-mortality change by cluster (%s, %s)",
                          metric$short, comp, nuts_lbl, ssp_lbl),
       subtitle = "Fixed y-scale across panels. Black band = OLS 95% CI.",
       caption  = caption_txt
@@ -671,11 +680,11 @@ make_scatter_pages <- function(plot_dt, comp, ssp_val) {
                   linewidth = 0.9, alpha = 0.15, colour = "black") +
       geom_text_repel(size = 3.2, max.overlaps = 25, segment.colour = "grey60",
                       segment.size = 0.3) +
-      geom_hline(yintercept = 1, linetype = "dotted", colour = "grey40") +
+      geom_hline(yintercept = 0, linetype = "dotted", colour = "grey40") +
       scale_x_continuous(name = x_lab) +
-      scale_y_continuous(name = y_lab, limits = y_lims) +
+      scale_y_continuous(name = y_lab, limits = y_lims, labels = pct_label) +
       labs(
-        title    = sprintf("%s vs %s-mortality multiplier \u2014 %s (%s, %s)",
+        title    = sprintf("%s vs %s-mortality change \u2014 %s (%s, %s)",
                            metric$short, comp, cl_lbl, nuts_lbl, ssp_lbl),
         subtitle = "OLS trend with 95% CI shown.",
         caption  = caption_txt
@@ -701,8 +710,10 @@ make_ssp_comparison <- function(plot_dt, comp) {
   clbl <- clust_labels_fn(
     merge(wide, feat_dt[, .(URAU_CODE, p10, p75, p90)], by = "URAU_CODE")
   )
+  wide[, `:=`(ssp2 = (ssp2 - 1) * 100, ssp3 = (ssp3 - 1) * 100)]
   lims <- range(c(wide$ssp2, wide$ssp3), na.rm = TRUE)
-  lims <- c(floor(lims[1] * 20) / 20, ceiling(lims[2] * 20) / 20)
+  lims <- c(floor(lims[1]), ceiling(lims[2]))
+  pct_label <- function(x) sprintf("%+.0f%%", x)
 
   ggplot(wide, aes(ssp2, ssp3, colour = cluster, label = LABEL)) +
     geom_abline(slope = 1, intercept = 0, linetype = "dashed", colour = "grey50") +
@@ -710,8 +721,10 @@ make_ssp_comparison <- function(plot_dt, comp) {
     geom_text_repel(size = 1.7, max.overlaps = 15, segment.colour = "grey60") +
     scale_colour_manual(values = cluster_colors, labels = clbl,
                         name = "Temperature\ncluster") +
-    scale_x_continuous(name = "SSP2-4.5 multiplier", limits = lims) +
-    scale_y_continuous(name = "SSP3-7.0 multiplier", limits = lims) +
+    scale_x_continuous(name = "SSP2-4.5 mortality change (%)", limits = lims,
+                       labels = pct_label) +
+    scale_y_continuous(name = "SSP3-7.0 mortality change (%)", limits = lims,
+                       labels = pct_label) +
     labs(
       title    = sprintf("SSP2-4.5 vs SSP3-7.0 %s-mortality multiplier (%s)",
                          comp, nuts_lbl),
@@ -730,17 +743,20 @@ make_gcm_spread_plot <- function(comp_val) {
   spread <- gcm_spread_dt[component == comp_val]
   spread <- merge(spread, feat_dt[, .(URAU_CODE, cluster)], by = "URAU_CODE")
   spread[, ssp_lbl := ssp_labels[ssp]]
+  spread[, multiplier := (multiplier - 1) * 100]
+  pct_label <- function(x) sprintf("%+.0f%%", x)
 
   ggplot(spread, aes(cluster, multiplier, fill = ssp_lbl)) +
     geom_boxplot(alpha = 0.75, outlier.size = 0.4,
                  position = position_dodge(width = 0.8)) +
-    geom_hline(yintercept = 1, linetype = "dotted", colour = "grey40") +
+    geom_hline(yintercept = 0, linetype = "dotted", colour = "grey40") +
     scale_fill_manual(values = c("SSP2-4.5" = "#2C7BB6", "SSP3-7.0" = "#D7191C"),
                       name = "Scenario") +
+    scale_y_continuous(labels = pct_label) +
     labs(
       x       = "Cluster (C1 = coldest \u2192 C4 = warmest)",
       y       = sprintf(
-        "%s-mortality multiplier\n(per-GCM, %s, age %s)",
+        "%s-mortality change\n(per-GCM, %s, age %s)",
         tools::toTitleCase(comp_val), period_lbl, focus_agegroup),
       title   = sprintf(
         "GCM uncertainty in %s-mortality multiplier by cluster", comp_val),
