@@ -482,6 +482,8 @@ make_hc_scatter <- function(yr) {
                              .(multiplier, country_code)][
                 match(hc_wide$country_code, country_code), multiplier]]
   hc_wide[, `:=`(cold = mult2val(cold), heat = mult2val(heat), total = mult2val(total))]
+  vig_codes <- c("AT", "BG", "CZ", "DE", "EE", "HR", "HU", "LT", "LV", "PL", "RO", "SI", "SK")
+  hc_wide[, label_face := ifelse(country_code %in% vig_codes, "bold", "plain")]
 
   hc_x_lab <- if (use_pct_change)
     sprintf("Cold mortality multiplier (%% vs baseline, %d)", yr)
@@ -515,9 +517,9 @@ make_hc_scatter <- function(yr) {
     ) +
     scale_size_continuous(range = c(2, 9), guide = "none") +
     geom_label_repel(
-      aes(label = country_code),
+      aes(label = country_code, fontface = label_face),
       size = 3.2, family = "Montserrat",
-      fontface = "bold", color = OceanBlue,
+      color = OceanBlue,
       fill = alpha("white", 0.85), label.size = 0.15,
       box.padding = 0.35, point.padding = 0.3, max.overlaps = 30,
       seed = 42
@@ -713,6 +715,7 @@ make_heatmap <- function(yr) {
     geom_tile(colour = "white", linewidth = 0.4) +
     geom_text(aes(label = cell_label),
               size = 3, family = "Montserrat", color = "black", fontface = "bold") +
+    scale_x_discrete(position = "top") +
     scale_fill_gradient2(
       low      = "#2166ac",
       mid      = "#d9d9d9",
