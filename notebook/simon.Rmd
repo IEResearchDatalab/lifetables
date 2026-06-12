@@ -53,7 +53,7 @@ $$
 \log RR(T) = \sum_{j=1}^{5} b_j \cdot s_j(T)
 $$
 
-where $$s_j(T)$$ are B-spline basis functions and $$b_j$$ are fitted coefficients.
+where $s_j(T)$ are B-spline basis functions and $b_j$ are fitted coefficients.
 
 ```{r load-coefficients, message=FALSE}
 source("../R/load_coefficients.R")
@@ -370,7 +370,7 @@ $$
 \end{cases}
 $$
 
-where $$\alpha$$ is the `adaptation_level` (e.g., 0.5 = 50% reduction by 2100).
+where $\alpha$ is the `adaptation_level` (e.g., 0.5 = 50% reduction by 2100).
 
 The adapted RR is:
 
@@ -410,9 +410,9 @@ cat(sprintf("  2100: %.2f (%.0f%% reduction)\n",
 
 To reduce dataset size and facilitate comparison with baseline, we aggregate daily RR to **annual means** by age and GCM:
 
-$$
+$
 \overline{RR}_{a,y,g} = \frac{1}{365} \sum_{d=1}^{365} RR_{a,d,y,g}
-$$
+$
 
 This represents the average mortality risk for each age, year, and climate model.
 
@@ -810,7 +810,7 @@ $$
 mx_{\text{climate}}(a, y) = mx_{\text{baseline}}(a, y) \times M(a, y)
 $$
 
-where $$M(a, y) > 1$$ indicates increased mortality due to climate change.
+where $M(a, y) > 1$ indicates increased mortality due to climate change.
 
 ---
 
@@ -887,9 +887,9 @@ ggplot(mort_climate[year %in% c(2050, 2070, 2099)],
 
 A **cohort life table** tracks a hypothetical birth cohort through time, applying age-specific mortality rates for each calendar year they live through.
 
-For a cohort born in year $$Y_0$$:
-- At age 20 (year $$Y_0 + 20$$), use mortality for year $$Y_0 + 20$$, age 20
-- At age 21 (year $$Y_0 + 21$$), use mortality for year $$Y_0 + 21$$, age 21
+For a cohort born in year $Y_0$:
+- At age 20 (year $Y_0 + 20$), use mortality for year $Y_0 + 20$, age 20
+- At age 21 (year $Y_0 + 21$), use mortality for year $Y_0 + 21$, age 21
 - ... and so on until the cohort dies out
 
 This differs from a **period life table**, which uses mortality rates from a single year.
