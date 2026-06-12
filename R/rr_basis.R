@@ -169,3 +169,117 @@ compute_avg_rr_by_age <- function(temps, temp_seq, rr_single_age,
 	names(avg_rr) <- as.character(age_range)
 	return(avg_rr)
 }
+#' Compute country-level RR curves by averaging city ERFs on a common grid
+#'
+#' Rigorous alternative to averaging B-spline coefficient vectors.
+#' For each city: builds a city-specific B-spline basis from that city's
+#' historical temperature distribution, evaluates the city ERF on the
+#' common country temperature grid (uncentered log-RR), then takes a
+#' population-weighted average across all cities in the country.
+#' MMT is found on the averaged curve and centering is applied AFTER
+#' averaging, so the country MMT reflects the composite exposure.
+#'
+#' This avoids the basis-mismatch error of coefficient averaging: each
+#' city's coefficients are only ever multiplied by the basis built from
+#' that city's own temperature distribution.
+#'
+#' @param coefs_cities  data.table of city coefficients for all cities in the
+#'                      country (URAU_CODE, agegroup, b1-b5)
+#' @param city_hist_temps Named list: city URAU_CODE -> numeric vector of
+#'                        historical daily temperatures
+#' @param city_pop_weights Named numeric vector: city URAU_CODE -> population
+#'                         weight (need not sum to 1; normalised internally)
+#' @param agelabs        Character vector of age group labels
+#' @param age_midpoints  Numeric midpoints for each age group
+#' @param country_varbound Numeric vector of length 2: country temperature range
+#' @param varfun         Basis function type (default "bs")
+#' @param vardegree      Degree of basis (default 2)
+#' @param varper         Percentiles for city knot placement (default c(10,75,90))
+#' @param temp_step      Temperature grid step size in °C (default 0.5)
+#' @return List with: temp_seq, rr_matrix (n_temp x n_age), mmt_vec
+compute_country_rr_curves <- function(coefs_cities, city_hist_temps,
+                                      city_pop_weights,
+                                      agelabs, age_midpoints,
+                                      country_varbound,
+                                      varfun = "bs", vardegree = 2,
+                                      varper = c(10, 75, 90),
+                                      temp_step = 0.5) {
+	city_codes <- unique(coefs_cities$URAU_CODE)
+	temp_seq   <- seq(country_varbound[1], country_varbound[2], by = temp_step)
+	n_temp     <- length(temp_seq)
+
+	# Normalise population weights (fall back to equal weights if missing)
+	pop_w <- city_pop_weights[city_codes]
+	pop_w[is.na(pop_w)] <- mean(pop_w, na.rm = TRUE)
+	if (all(is.na(pop_w)) || sum(pop_w, na.rm = TRUE) == 0)
+		pop_w[] <- 1
+	pop_w <- pop_w / sum(pop_w, na.rm = TRUE)
+
+	# Pre-build one B-spline basis per city on the COUNTRY temperature grid,
+	# using the CITY's own historical percentiles as knots.
+	# This is the only valid way to evaluate city coefficients outside their
+	# original basis space.
+	cat(sprintf("  Building city bases for %d cities...\n", length(city_codes)))
+	city_bases <- lapply(city_codes, function(city) {
+		ch <- city_hist_temps[[city]]
+		if (length(ch) < 20) return(NULL)
+		city_knots  <- quantile(ch, varper / 100, na.rm = TRUE)
+		city_bound  <- range(ch, na.rm = TRUE)
+		city_argvar <- list(fun = varfun, degree = vardegree,
+		                    knots = city_knots, Bound = city_bound)
+		do.call(onebasis, c(list(x = temp_seq), city_argvar))
+	})
+	names(city_bases) <- city_codes
+
+	rr_matrix <- matrix(NA_real_, nrow = n_temp, ncol = length(agelabs))
+	mmt_vec   <- numeric(length(agelabs))
+
+	for (i in seq_along(agelabs)) {
+		age <- agelabs[i]
+
+		# Weighted sum of uncentered log-RR curves across cities
+		log_rr_wsum  <- numeric(n_temp)
+		weight_total <- 0
+
+		for (city in city_codes) {
+			basis_city <- city_bases[[city]]
+			if (is.null(basis_city)) next
+
+			coef_row <- coefs_cities[URAU_CODE == city & agegroup == age]
+			if (nrow(coef_row) == 0L) next
+
+			coefs_vec    <- as.numeric(coef_row[, .(b1, b2, b3, b4, b5)])
+			log_rr_city  <- as.vector(basis_city %*% coefs_vec)
+			w            <- pop_w[city]
+			log_rr_wsum  <- log_rr_wsum + w * log_rr_city
+			weight_total <- weight_total + w
+		}
+
+		if (weight_total == 0) {
+			warning(sprintf("No valid cities for age group %s", age))
+			next
+		}
+
+		log_rr_avg <- log_rr_wsum / weight_total
+
+		# Find country MMT in 25th-99th percentile of the country temperature grid
+		ind     <- temp_seq >= quantile(temp_seq, 0.25) &
+		           temp_seq <= quantile(temp_seq, 0.99)
+		mmt_idx <- which(ind)[which.min(log_rr_avg[ind])]
+		mmt     <- temp_seq[mmt_idx]
+		mmt_vec[i] <- mmt
+
+		# Centre at country MMT, floor at RR = 1
+		log_rr_centered <- log_rr_avg - log_rr_avg[mmt_idx]
+		rr_matrix[, i]  <- pmax(exp(log_rr_centered), 1)
+
+		cat(sprintf("  %s (midpoint: %.1f): MMT = %.1f°C\n",
+		            age, age_midpoints[i], mmt))
+	}
+
+	return(list(
+		temp_seq  = temp_seq,
+		rr_matrix = rr_matrix,
+		mmt_vec   = mmt_vec
+	))
+}

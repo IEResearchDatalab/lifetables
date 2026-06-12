@@ -11,6 +11,7 @@
 
 library(data.table)
 library(arrow)
+library(dplyr)  # for the %>% pipe operator
 
 #' Load projected temperature data for a city
 #'
