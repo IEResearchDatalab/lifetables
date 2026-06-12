@@ -1204,34 +1204,569 @@ cat(sprintf("Saved: %s\n", summary_path))
 
 ---
 
-# Summary
+# 14. Lifespan Inequality Analysis
 
-✅ **Baseline mortality loaded**: Eurostat projections (or synthetic data)  
-✅ **Climate multipliers applied**: Age- and year-specific impacts  
-✅ **Cohort life table constructed**: Tracks birth cohort through time  
-✅ **Life expectancy computed**: Baseline vs climate scenarios  
-✅ **Excess deaths quantified**: Climate change mortality burden  
-✅ **Results exported**: Full life table and summary statistics
+Lifespan inequality (LI) measures the **dispersion** or **spread** of ages at death within a population. Unlike life expectancy (which is a mean), LI captures how equally or unequally distributed lifespans are.
 
-## Key Findings
+**Key insight**: Two populations can have identical life expectancy but very different inequality:
+- **Low LI**: Deaths concentrated around a narrow age range (e.g., most people die 75-85)
+- **High LI**: Deaths spread across a wide age range (e.g., deaths from 60-100)
 
-For the **cohort born in `r cohort_birth_year`** in **`r city`** under **SSP`r scenario`**:
+Climate change affects LI through the **age pattern** of excess deaths, not just their total number.
 
-- **Life expectancy at age `r cohort_start_age`**: 
-  - Baseline: **`r sprintf("%.2f", e20_base)` years**
-  - Climate-adjusted: **`r sprintf("%.2f", e20_climate)` years**
-  - Change: **`r sprintf("%.2f", delta_e20)` years** (`r sprintf("%.2f", pct_delta_e20)`%)
+---
 
-- **Excess deaths**: **`r format(round(total_excess), big.mark = ",")`** additional deaths (`r sprintf("%.2f", pct_excess)`% of cohort)
+## 14.1 Age-at-Death Distribution
 
-## Next Steps
+The life table column `dx` represents the **distribution of deaths by age**. From this, we can compute various inequality metrics.
 
-The cohort life table can now be used for:
+```{r age-at-death-distribution}
+# Extract age-at-death distributions
+deaths_base <- lifetable[, .(age, dx = dx_base)]
+deaths_climate <- lifetable[, .(age, dx = dx_climate)]
 
-1. **Lifespan inequality metrics** — Gini coefficient, interquartile range of age at death
-2. **Actuarial valuations** — Pension liabilities, insurance reserves
-3. **Policy analysis** — Cost-benefit of adaptation measures
-4. **Scenario comparison** — Across different SSPs and adaptation levels
+# Normalize to proportions (for visualization)
+deaths_base[, prop := dx / sum(dx)]
+deaths_climate[, prop := dx / sum(dx)]
+
+cat(sprintf("\n=== Age-at-Death Distribution ===\n"))
+cat(sprintf("Baseline deaths: %s\n", format(round(sum(deaths_base$dx)), big.mark = ",")))
+cat(sprintf("Climate deaths: %s\n", format(round(sum(deaths_climate$dx)), big.mark = ",")))
+cat(sprintf("Total excess deaths: %s\n", format(round(sum(deaths_climate$dx) - sum(deaths_base$dx)), big.mark = ",")))
+```
+
+---
+
+## 14.2 Lifespan Inequality Metrics
+
+### 14.2.1 Gini Coefficient
+
+The **Gini coefficient** measures inequality on a 0-1 scale:
+- **0**: Perfect equality (everyone dies at the same age)
+- **1**: Maximum inequality (all deaths at extremes)
+
+For ages at death, Gini is computed as:
+
+$$
+G = \frac{\sum_{i=1}^{n} \sum_{j=1}^{n} |x_i - x_j| \cdot w_i \cdot w_j}{2 \cdot \bar{x} \cdot \sum_{i=1}^{n} w_i^2}
+$$
+
+where $$x_i$$ = age, $$w_i$$ = deaths at that age.
+
+```{r compute-gini}
+# Gini coefficient function
+compute_gini <- function(ages, deaths) {
+  # Remove zero-death ages
+  valid <- deaths > 0
+  ages <- ages[valid]
+  deaths <- deaths[valid]
+  
+  n <- length(ages)
+  total_deaths <- sum(deaths)
+  
+  # Weighted mean age at death
+  mean_age <- sum(ages * deaths) / total_deaths
+  
+  # Compute pairwise absolute differences
+  numerator <- 0
+  for (i in 1:n) {
+    for (j in 1:n) {
+      numerator <- numerator + abs(ages[i] - ages[j]) * deaths[i] * deaths[j]
+    }
+  }
+  
+  denominator <- 2 * mean_age * total_deaths^2
+  
+  gini <- numerator / denominator
+  return(gini)
+}
+
+# Compute Gini for both scenarios
+gini_base <- compute_gini(deaths_base$age, deaths_base$dx)
+gini_climate <- compute_gini(deaths_climate$age, deaths_climate$dx)
+
+delta_gini <- gini_climate - gini_base
+pct_change_gini <- (delta_gini / gini_base) * 100
+
+cat(sprintf("\n=== Gini Coefficient ===\n"))
+cat(sprintf("Baseline:         %.4f\n", gini_base))
+cat(sprintf("Climate-adjusted: %.4f\n", gini_climate))
+cat(sprintf("Change:           %.4f (%.2f%%)\n", delta_gini, pct_change_gini))
+
+if (delta_gini > 0) {
+  cat("\n→ Climate change INCREASES lifespan inequality\n")
+  cat("  (deaths become more unequally distributed)\n")
+} else {
+  cat("\n→ Climate change DECREASES lifespan inequality\n")
+  cat("  (deaths become more equally distributed)\n")
+}
+```
+
+---
+
+### 14.2.2 Standard Deviation of Age at Death
+
+The **standard deviation** (SD) measures dispersion in years:
+
+$$
+\text{SD} = \sqrt{\frac{\sum (x_i - \bar{x})^2 \cdot d_i}{\sum d_i}}
+$$
+
+where $$x_i$$ = age, $$d_i$$ = deaths, $$\bar{x}$$ = mean age at death.
+
+```{r compute-sd}
+# Standard deviation function
+compute_sd_age_at_death <- function(ages, deaths) {
+  total_deaths <- sum(deaths)
+  mean_age <- sum(ages * deaths) / total_deaths
+  variance <- sum((ages - mean_age)^2 * deaths) / total_deaths
+  sd <- sqrt(variance)
+  return(sd)
+}
+
+# Compute SD for both scenarios
+sd_base <- compute_sd_age_at_death(deaths_base$age, deaths_base$dx)
+sd_climate <- compute_sd_age_at_death(deaths_climate$age, deaths_climate$dx)
+
+delta_sd <- sd_climate - sd_base
+pct_change_sd <- (delta_sd / sd_base) * 100
+
+cat(sprintf("\n=== Standard Deviation of Age at Death ===\n"))
+cat(sprintf("Baseline:         %.2f years\n", sd_base))
+cat(sprintf("Climate-adjusted: %.2f years\n", sd_climate))
+cat(sprintf("Change:           %.2f years (%.2f%%)\n", delta_sd, pct_change_sd))
+```
+
+**Interpretation**: SD quantifies how "spread out" deaths are. Higher SD means ages at death are more dispersed.
+
+---
+
+### 14.2.3 Interquartile Range (IQR)
+
+The **IQR** is the difference between the 75th and 25th percentile of age at death:
+
+$$
+\text{IQR} = Q_{75} - Q_{25}
+$$
+
+This measures the spread of the "middle 50%" of deaths.
+
+```{r compute-iqr}
+# IQR function
+compute_iqr_age_at_death <- function(ages, deaths) {
+  # Create cumulative distribution
+  cumsum_deaths <- cumsum(deaths)
+  total_deaths <- sum(deaths)
+  
+  # Find 25th percentile
+  q25_idx <- which(cumsum_deaths >= 0.25 * total_deaths)[1]
+  q25 <- ages[q25_idx]
+  
+  # Find 75th percentile
+  q75_idx <- which(cumsum_deaths >= 0.75 * total_deaths)[1]
+  q75 <- ages[q75_idx]
+  
+  iqr <- q75 - q25
+  return(list(q25 = q25, q75 = q75, iqr = iqr))
+}
+
+# Compute IQR for both scenarios
+iqr_base <- compute_iqr_age_at_death(deaths_base$age, deaths_base$dx)
+iqr_climate <- compute_iqr_age_at_death(deaths_climate$age, deaths_climate$dx)
+
+delta_iqr <- iqr_climate$iqr - iqr_base$iqr
+
+cat(sprintf("\n=== Interquartile Range (IQR) ===\n"))
+cat(sprintf("Baseline:\n"))
+cat(sprintf("  Q25 (25th percentile): %.1f years\n", iqr_base$q25))
+cat(sprintf("  Q75 (75th percentile): %.1f years\n", iqr_base$q75))
+cat(sprintf("  IQR: %.1f years\n", iqr_base$iqr))
+
+cat(sprintf("\nClimate-adjusted:\n"))
+cat(sprintf("  Q25 (25th percentile): %.1f years\n", iqr_climate$q25))
+cat(sprintf("  Q75 (75th percentile): %.1f years\n", iqr_climate$q75))
+cat(sprintf("  IQR: %.1f years\n", iqr_climate$iqr))
+
+cat(sprintf("\nChange in IQR: %.2f years\n", delta_iqr))
+```
+
+---
+
+## 14.3 Threshold Analysis
+
+A critical insight from demography: there is a **threshold age** that determines whether additional deaths increase or decrease lifespan inequality.
+
+**Rule of thumb**: The threshold is approximately where **remaining life expectancy** equals the population's **life expectancy at the starting age**.
+
+$$
+\text{Threshold} \approx \text{age where } e_x \approx e_{20}
+$$
+
+- **Deaths below threshold**: Increase LI (premature deaths)
+- **Deaths above threshold**: Decrease LI (late deaths compress distribution)
+
+### 14.3.1 Identify Threshold Age
+
+```{r identify-threshold}
+# Threshold: age where remaining LE ≈ LE at starting age
+e20_base_val <- lifetable[age == cohort_start_age, ex_base]
+
+# Find age closest to this remaining LE
+lifetable[, diff_from_e20 := abs(ex_base - e20_base_val)]
+threshold_age <- lifetable[which.min(diff_from_e20), age]
+
+cat(sprintf("\n=== Threshold Age Analysis ===\n"))
+cat(sprintf("Life expectancy at age %d: %.2f years\n", cohort_start_age, e20_base_val))
+cat(sprintf("Threshold age: %d years\n", threshold_age))
+cat(sprintf("Remaining LE at threshold: %.2f years\n", 
+            lifetable[age == threshold_age, ex_base]))
+```
+
+---
+
+### 14.3.2 Classify Excess Deaths by Threshold
+
+```{r classify-excess-deaths}
+# Add threshold classification to life table
+lifetable[, below_threshold := age < threshold_age]
+lifetable[, excess_deaths := dx_climate - dx_base]
+
+# Summarize excess deaths by position relative to threshold
+excess_summary <- lifetable[, .(
+  total_excess = sum(excess_deaths),
+  excess_below = sum(excess_deaths[below_threshold == TRUE]),
+  excess_above = sum(excess_deaths[below_threshold == FALSE])
+)]
+
+pct_below <- (excess_summary$excess_below / excess_summary$total_excess) * 100
+pct_above <- (excess_summary$excess_above / excess_summary$total_excess) * 100
+
+cat(sprintf("\n=== Excess Deaths Classification ===\n"))
+cat(sprintf("Total excess deaths: %.0f\n", excess_summary$total_excess))
+cat(sprintf("\nBelow threshold (age < %d):\n", threshold_age))
+cat(sprintf("  Excess deaths: %.0f (%.1f%%)\n", excess_summary$excess_below, pct_below))
+cat(sprintf("  Effect: INCREASES lifespan inequality\n"))
+
+cat(sprintf("\nAbove threshold (age ≥ %d):\n", threshold_age))
+cat(sprintf("  Excess deaths: %.0f (%.1f%%)\n", excess_summary$excess_above, pct_above))
+cat(sprintf("  Effect: DECREASES lifespan inequality\n"))
+
+# Net effect interpretation
+if (excess_summary$excess_below > abs(excess_summary$excess_above)) {
+  cat(sprintf("\n→ NET EFFECT: Climate change increases lifespan inequality\n"))
+  cat(sprintf("   (more excess deaths below threshold)\n"))
+} else {
+  cat(sprintf("\n→ NET EFFECT: Climate change decreases lifespan inequality\n"))
+  cat(sprintf("   (more excess deaths above threshold)\n"))
+}
+```
+
+**Interpretation**: This classification reveals **where** climate impacts mortality distribution, not just **how much**.
+
+---
+
+## 14.4 Visualizations
+
+### 14.4.1 Age-at-Death Distribution Comparison
+
+```{r plot-age-at-death, fig.width=10, fig.height=6}
+# Combine distributions for plotting
+dist_combined <- rbind(
+  deaths_base[, .(age, deaths = dx, scenario = "Baseline")],
+  deaths_climate[, .(age, deaths = dx, scenario = "Climate")]
+)
+
+# Calculate proportions for clean visualization
+dist_combined[, prop := deaths / sum(deaths), by = scenario]
+
+ggplot(dist_combined, aes(x = age, y = prop, fill = scenario)) +
+  geom_area(alpha = 0.6, position = "identity") +
+  geom_vline(xintercept = threshold_age, linetype = "dashed", 
+             color = "black", linewidth = 1) +
+  annotate("text", x = threshold_age + 2, y = max(dist_combined$prop) * 0.9,
+           label = sprintf("Threshold\n(age %d)", threshold_age),
+           hjust = 0, size = 3.5) +
+  scale_fill_manual(
+    values = c("Baseline" = "#1f77b4", "Climate" = "#d62728"),
+    name = "Scenario"
+  ) +
+  scale_y_continuous(labels = scales::percent_format()) +
+  labs(
+    title = "Age-at-Death Distribution",
+    subtitle = sprintf("Cohort born %d — %s, SSP%d, Adaptation %.0f%%",
+                       cohort_birth_year, city, scenario, adaptation_level * 100),
+    x = "Age at Death",
+    y = "Proportion of Deaths",
+    caption = "Dashed line: threshold age (deaths below increase LI; above decrease LI)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom")
+```
+
+---
+
+### 14.4.2 Excess Deaths by Age
+
+```{r plot-excess-deaths-by-age, fig.width=10, fig.height=6}
+# Highlight threshold region
+ggplot(lifetable, aes(x = age, y = excess_deaths)) +
+  geom_rect(aes(xmin = -Inf, xmax = threshold_age, ymin = -Inf, ymax = Inf),
+            fill = "#fee5d9", alpha = 0.3) +
+  geom_rect(aes(xmin = threshold_age, xmax = Inf, ymin = -Inf, ymax = Inf),
+            fill = "#deebf7", alpha = 0.3) +
+  geom_hline(yintercept = 0, linetype = "solid", color = "gray50") +
+  geom_line(color = "#d62728", linewidth = 1) +
+  geom_vline(xintercept = threshold_age, linetype = "dashed", 
+             color = "black", linewidth = 1) +
+  annotate("text", x = threshold_age - 5, y = max(lifetable$excess_deaths) * 0.8,
+           label = "Below threshold\n(increases LI)", hjust = 1, size = 3) +
+  annotate("text", x = threshold_age + 5, y = max(lifetable$excess_deaths) * 0.8,
+           label = "Above threshold\n(decreases LI)", hjust = 0, size = 3) +
+  scale_y_continuous(labels = scales::comma_format()) +
+  labs(
+    title = "Excess Deaths by Age Due to Climate Change",
+    subtitle = sprintf("Threshold age: %d (where remaining LE ≈ LE at age %d)",
+                       threshold_age, cohort_start_age),
+    x = "Age",
+    y = "Excess Deaths (Climate - Baseline)",
+    caption = sprintf("%s, SSP%d, Adaptation %.0f%%", 
+                      city, scenario, adaptation_level * 100)
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+**Interpretation**: This plot shows the **age pattern** of climate impacts, revealing whether climate predominantly affects "younger old" or "older old" populations.
+
+---
+
+### 14.4.3 Lifespan Inequality Metrics Summary
+
+```{r plot-li-metrics, fig.width=8, fig.height=6}
+# Create summary data frame
+li_metrics <- data.table(
+  Metric = c("Gini", "Gini", "SD", "SD", "IQR", "IQR"),
+  Scenario = rep(c("Baseline", "Climate"), 3),
+  Value = c(gini_base, gini_climate, 
+            sd_base, sd_climate,
+            iqr_base$iqr, iqr_climate$iqr)
+)
+
+# Normalize for visualization (within each metric)
+li_metrics[, Value_norm := Value / Value[1], by = Metric]
+
+ggplot(li_metrics, aes(x = Scenario, y = Value, fill = Scenario)) +
+  geom_col(alpha = 0.8) +
+  geom_text(aes(label = sprintf("%.3f", Value)), 
+            vjust = -0.5, size = 3.5) +
+  facet_wrap(~ Metric, scales = "free_y", nrow = 1) +
+  scale_fill_manual(
+    values = c("Baseline" = "#1f77b4", "Climate" = "#d62728")
+  ) +
+  labs(
+    title = "Lifespan Inequality Metrics: Baseline vs Climate",
+    subtitle = sprintf("%s, SSP%d, Adaptation %.0f%%", 
+                       city, scenario, adaptation_level * 100),
+    y = "Metric Value",
+    x = NULL
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+---
+
+## 14.5 Summary Table
+
+```{r li-summary-table}
+# Create comprehensive summary
+li_summary <- data.table(
+  Metric = c("Life Expectancy at 20", "Gini Coefficient", 
+             "SD of Age at Death", "IQR of Age at Death",
+             "Threshold Age", "Excess Deaths Below Threshold",
+             "Excess Deaths Above Threshold"),
+  Baseline = c(
+    sprintf("%.2f years", e20_base),
+    sprintf("%.4f", gini_base),
+    sprintf("%.2f years", sd_base),
+    sprintf("%.1f years", iqr_base$iqr),
+    sprintf("%d years", threshold_age),
+    "—",
+    "—"
+  ),
+  Climate = c(
+    sprintf("%.2f years", e20_climate),
+    sprintf("%.4f", gini_climate),
+    sprintf("%.2f years", sd_climate),
+    sprintf("%.1f years", iqr_climate$iqr),
+    "—",
+    sprintf("%.0f (%.1f%%)", excess_summary$excess_below, pct_below),
+    sprintf("%.0f (%.1f%%)", excess_summary$excess_above, pct_above)
+  ),
+  Change = c(
+    sprintf("%.2f years (%.2f%%)", delta_e20, pct_delta_e20),
+    sprintf("%.4f (%.2f%%)", delta_gini, pct_change_gini),
+    sprintf("%.2f years (%.2f%%)", delta_sd, pct_change_sd),
+    sprintf("%.1f years", delta_iqr),
+    "—",
+    "—",
+    "—"
+  )
+)
+
+cat("\n=== Lifespan Inequality Summary ===\n")
+print(li_summary)
+```
+
+---
+
+## 14.6 Export Lifespan Inequality Results
+
+```{r export-li-results}
+# Create output directory if needed
+if (!dir.exists("results")) dir.create("results", recursive = TRUE)
+
+# Save detailed metrics
+li_results <- data.table(
+  city = city,
+  scenario = sprintf("SSP%d", scenario),
+  adaptation = adaptation_level,
+  cohort_birth_year = cohort_birth_year,
+  # Life expectancy
+  e20_baseline = e20_base,
+  e20_climate = e20_climate,
+  delta_e20 = delta_e20,
+  pct_change_e20 = pct_delta_e20,
+  # Gini
+  gini_baseline = gini_base,
+  gini_climate = gini_climate,
+  delta_gini = delta_gini,
+  pct_change_gini = pct_change_gini,
+  # Standard deviation
+  sd_baseline = sd_base,
+  sd_climate = sd_climate,
+  delta_sd = delta_sd,
+  pct_change_sd = pct_change_sd,
+  # IQR
+  iqr_baseline = iqr_base$iqr,
+  iqr_climate = iqr_climate$iqr,
+  delta_iqr = delta_iqr,
+  # Threshold
+  threshold_age = threshold_age,
+  # Excess deaths classification
+  total_excess_deaths = excess_summary$total_excess,
+  excess_deaths_below_threshold = excess_summary$excess_below,
+  excess_deaths_above_threshold = excess_summary$excess_above,
+  pct_excess_below = pct_below,
+  pct_excess_above = pct_above
+)
+
+# Save
+li_path <- sprintf("results/lifespan_inequality_%s_ssp%d_cohort%d.csv",
+                   tolower(gsub(" ", "_", city)),
+                   scenario,
+                   cohort_birth_year)
+
+fwrite(li_results, li_path)
+cat(sprintf("\nSaved: %s\n", li_path))
+
+# Also save age-specific excess deaths for detailed analysis
+excess_by_age <- lifetable[, .(
+  age, year,
+  dx_baseline = dx_base,
+  dx_climate = dx_climate,
+  excess_deaths,
+  below_threshold,
+  multiplier
+)]
+
+excess_path <- sprintf("results/excess_deaths_by_age_%s_ssp%d.csv",
+                       tolower(gsub(" ", "_", city)),
+                       scenario)
+
+fwrite(excess_by_age, excess_path)
+cat(sprintf("Saved: %s\n", excess_path))
+```
+
+---
+
+## 14.7 Key Findings Interpretation
+
+```{r interpretation}
+cat("\n=== KEY FINDINGS ===\n\n")
+
+cat(sprintf("For the cohort born in %d in %s under SSP%d:\n\n", 
+            cohort_birth_year, city, scenario))
+
+# Life expectancy
+cat("1. LIFE EXPECTANCY\n")
+if (delta_e20 < 0) {
+  cat(sprintf("   → Climate change REDUCES life expectancy by %.2f years (%.2f%%)\n",
+              abs(delta_e20), abs(pct_delta_e20)))
+  cat(sprintf("   → Equivalent to %.1f months lost\n", abs(delta_e20) * 12))
+} else {
+  cat(sprintf("   → Climate change INCREASES life expectancy by %.2f years (%.2f%%)\n",
+              delta_e20, pct_delta_e20))
+  cat("   → (Likely due to reduced cold-related mortality)\n")
+}
+
+# Lifespan inequality
+cat("\n2. LIFESPAN INEQUALITY\n")
+if (delta_gini > 0) {
+  cat(sprintf("   → Climate change INCREASES inequality (Gini: +%.4f, +%.1f%%)\n",
+              delta_gini, pct_change_gini))
+  cat("   → Ages at death become MORE unequally distributed\n")
+} else {
+  cat(sprintf("   → Climate change DECREASES inequality (Gini: %.4f, %.1f%%)\n",
+              delta_gini, pct_change_gini))
+  cat("   → Ages at death become MORE equally distributed\n")
+}
+
+cat(sprintf("   → Standard deviation changes by %.2f years\n", delta_sd))
+cat(sprintf("   → IQR changes by %.1f years\n", delta_iqr))
+
+# Mechanism
+cat("\n3. MECHANISM\n")
+cat(sprintf("   → Threshold age: %d years\n", threshold_age))
+cat(sprintf("   → %.1f%% of excess deaths occur BELOW threshold\n", pct_below))
+cat(sprintf("   → %.1f%% of excess deaths occur ABOVE threshold\n", pct_above))
+
+if (pct_below > 60) {
+  cat("   → Climate predominantly kills 'younger old' people\n")
+  cat("   → This is the PRIMARY driver of increased inequality\n")
+} else if (pct_above > 60) {
+  cat("   → Climate predominantly kills 'older old' people\n")
+  cat("   → This compresses the age-at-death distribution\n")
+} else {
+  cat("   → Climate impacts are distributed across ages\n")
+  cat("   → Net inequality effect depends on relative magnitudes\n")
+}
+
+# Policy implication
+cat("\n4. POLICY IMPLICATION\n")
+if (delta_gini > 0) {
+  cat("   → Without adaptation, climate change increases health inequity\n")
+  cat("   → Priority: protect vulnerable 'younger old' populations\n")
+} else {
+  cat("   → Climate has a compression effect on lifespans\n")
+  cat("   → But mean LE still affected—focus on absolute longevity\n")
+}
+
+cat(sprintf("\n   → With %.0f%% adaptation by 2100, these impacts are partially mitigated\n",
+            adaptation_level * 100))
+```
+
+---
+
+## Next Steps for Full Pipeline
+
+1. **Multiple scenarios**: Run for all SSPs (1, 2, 3, 5) and adaptation levels (0%, 25%, 50%, 75%, 100%)
+2. **Multiple cities**: Extend to 10-20 European cities (Vienna, Madrid, Stockholm, Athens, etc.)
+3. **Geographic decomposition**: Compute within-city vs between-city inequality components
+4. **Temporal trends**: Track how LI evolves year-by-year (not just single cohort)
+5. **Heat vs cold decomposition**: Separate LI impacts of heat vs cold mortality
+
+This single-city demo provides the **methodological foundation** for the full multi-scenario, multi-city analysis in Simon's Paper 1.
 
 ---
 
