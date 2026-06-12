@@ -1,0 +1,202 @@
+# Simon Life Span Inequality
+# =============================
+
+Choose a city, an scenario and an adaptation level for year 2100 (we assume the adaptation rises linearly from 2030 to 2100).
+
+```{r}
+city <- "Vienna"
+city_code <- "AT001C"
+scenario <- 2
+adaptation_level <- 0.5
+```
+
+## Exposure-Response Functions (Relative Risk Curves)
+
+Load Masselot's ERF for the chosen city.
+
+```{r}
+# import function load_city_coefficients from R/load_coefficients.R
+source("../R/load_coefficients.R")
+
+coefs <-load_city_coefficients(city_code, coefs_path="../data/coefs.csv")
+# contains $city and $all
+
+# Display the first few rows of the city coefficients
+head(coefs$city)
+```
+
+Original Masselot coefficients are grouped by age. We need to expand them to single ages.
+
+```{r}
+agelabs      <- c("20-44", "45-64", "65-74", "75-84", "85+")
+age_midpoints <- c(32.5, 55, 70, 80, 92.5)
+age_range     <- 20:100
+
+coefs_single_age <- interpolate_coefs_to_single_age(
+    coefs$city, coefs$all,
+	agelabs, age_midpoints,
+	age_range = age_range,
+	city_code = city_code
+)
+
+# Display the first few rows of the single-age coefficients
+head(coefs_single_age)
+```
+
+## Temperature Projections
+
+Load the projected temperature data for the city, excluding certain GCMs if needed.
+
+```{r}
+source("../R/load_data.R")
+
+parquet_path <- "../data/tmeanproj.gz.parquet"
+
+# GCM exclusions (already removed at prep stage for partitioned data,
+# but kept here for fallback / local dev with full parquet)
+gcmexcl <- c("CMCC_CM2_SR5", "TaiESM1")
+
+temp_data <- load_projected_temperatures(
+    city_code,
+    parquet_path = parquet_path,
+    gcmexcl = gcmexcl)
+
+proj_data <- temp_data$proj_data
+gcm_cols  <- temp_data$gcm_cols
+
+# Display the first few rows of the temperature data
+head(proj_data)
+```
+
+Currently we have wide GCM columns. Convert to long:
+
+
+```{r}
+library(data.table)
+
+temp_long <- proj_data[ssp == scenario]
+
+temp_long <- melt(
+  temp_long,
+  id.vars = c("URAU_CODE", "date", "year", "doy", "ssp"),
+  measure.vars = gcm_cols,
+  variable.name = "gcm",
+  value.name = "temp"
+)
+
+# Display the first few rows of the long-format temperature data
+head(temp_long)
+```
+
+Cross-join with ages.
+
+```{r}
+setDT(coefs_single_age)
+
+# Keep only needed columns
+age_coefs <- coefs_single_age[, .(agegroup, b1, b2, b3, b4, b5)]
+
+# Cross join
+temp_long[, key := 1]
+age_coefs[, key := 1]
+
+dt <- merge(temp_long, age_coefs, by = "key", allow.cartesian = TRUE)
+dt[, key := NULL]
+
+# Display the first few rows of the combined data
+head(dt)
+```
+
+Recreate the temperature basis.
+
+```{r}
+library(dlnm)
+library(splines)
+
+varfun    <- "bs"
+vardegree <- 2
+varper    <- c(10, 75, 90)
+
+# Use historical temps to define knots
+hist_temps <- unlist(
+  proj_data[ssp == "hist", ..gcm_cols],
+  use.names = FALSE
+)
+hist_temps <- hist_temps[!is.na(hist_temps)]
+
+varknots <- quantile(hist_temps, varper / 100, na.rm = TRUE)
+varbound <- range(hist_temps, na.rm = TRUE)
+
+argvar <- list(fun = varfun,
+               degree = vardegree,
+               knots = varknots,
+               Bound = varbound)
+
+# Build basis for each observed temperature
+basis <- do.call(onebasis, c(list(x = dt$temp), argvar))
+```
+
+Compute log(RR).
+
+```{r}
+coef_mat <- as.matrix(dt[, .(b1, b2, b3, b4, b5)])
+
+log_rr <- rowSums(basis * coef_mat)
+dt[, log_rr := log_rr]
+```
+
+Find MMT per age (for centering).
+
+```{r}
+temp_seq <- seq(varbound[1], varbound[2], by = 0.1)
+basis_seq <- do.call(onebasis, c(list(x = temp_seq), argvar))
+
+mmt_by_age <- dt[, {
+  coefs <- unique(.SD[, .(b1,b2,b3,b4,b5)])
+  coefs_vec <- as.numeric(coefs[1,])
+  
+  log_rr_seq <- basis_seq %*% coefs_vec
+  
+  ind <- temp_seq >= quantile(temp_seq, 0.25) &
+         temp_seq <= quantile(temp_seq, 0.99)
+  
+  mmt <- temp_seq[ind][which.min(log_rr_seq[ind])]
+  
+  .(mmt = mmt)
+}, by = agegroup]
+
+# Merge back
+dt <- merge(dt, mmt_by_age, by = "agegroup")
+```
+
+Center at MMT.
+
+```{r}
+basis_mmt <- do.call(onebasis, c(list(x = dt$mmt), argvar))
+
+log_rr_centered <- rowSums((basis - basis_mmt) * coef_mat)
+
+dt[, RR := pmax(exp(log_rr_centered), 1)]
+```
+
+Apply adaptation.
+
+```{r}
+dt[, adapt_factor :=
+      fifelse(year < 2030, 0,
+      fifelse(year > 2100, adaptation_level,
+              adaptation_level * (year - 2030) / (2100 - 2030)))]
+
+dt[, RR_adapted := 1 + (RR - 1) * (1 - adapt_factor)]
+```
+
+Average annual impacts.
+
+```{r}
+dt_annual <- dt[, .(
+  RR_mean = mean(RR_adapted)
+), by = .(year, agegroup, gcm)]
+
+# Display the first few rows of the annual impacts
+head(dt_annual)
+```
