@@ -145,7 +145,7 @@ for (city in names(tasks_by_city)) {
       
       result <- compute_scenario(
         city_code = task$city_code,
-        ssp = task$ssp,
+        target_ssp = task$ssp,
         adaptation = task$adaptation,
         output_detailed = opt$detailed
       )

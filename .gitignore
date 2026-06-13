@@ -77,6 +77,10 @@ vignettes/*.pdf
 .Renviron
 
 cordex_data/
+precomputed/
 
 # This folder contains data for copilot
 context/
+
+# log messages
+logs/
