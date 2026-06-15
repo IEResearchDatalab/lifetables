@@ -1,0 +1,846 @@
+---
+title: "Climate Change, Mortality, and Lifespan Inequality"
+subtitle: "Preliminary Analysis: Single-City Deep Dive"
+author: "Simon Project"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    code_folding: show
+    theme: flatly
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.width = 10,
+  fig.height = 6,
+  dpi = 300
+)
+```
+
+# 1. Configuration
+
+Select the target city for analysis. The analysis will compare this city across different SSP scenarios and adaptation levels.
+
+```{r config}
+# ============================================================================
+# CONFIGURATION: Select Target City
+# ============================================================================
+
+target_city_code <- "AT001C"  # Vienna, Austria
+target_city_name <- "Vienna"
+
+# Scenarios to analyze
+ssps <- c(2, 3)  # SSP2-4.5, SSP3-7.0
+ssp_labels <- c("SSP2-4.5", "SSP3-7.0")
+
+# Adaptation levels
+adaptation_levels <- seq(0, 1, 0.1)
+
+# Cohort parameters (must match pipeline settings)
+cohort_birth_year <- 2020
+cohort_start_age <- 20
+```
+
+---
+
+# 2. Data Loading
+
+Load the pre-computed results from the pipeline. No heavy computation is performed in this notebook.
+
+```{r load-data}
+library(data.table)
+library(ggplot2)
+library(scales)
+library(viridis)
+
+# Load main results summary
+results <- fread("../results/lifespan_inequality_summary.csv")
+
+cat(sprintf("Total scenarios loaded: %s\n", format(nrow(results), big.mark = ",")))
+cat(sprintf("Cities: %d\n", length(unique(results$city_code))))
+cat(sprintf("SSPs: %s\n", paste(unique(results$ssp), collapse = ", ")))
+cat(sprintf("Adaptation levels: %d\n", length(unique(results$adaptation))))
+
+# Filter to target city
+city_results <- results[city_code == target_city_code]
+
+if (nrow(city_results) == 0) {
+  stop(sprintf("No results found for city: %s", target_city_code))
+}
+
+cat(sprintf("\n%s: %d scenarios available\n", target_city_name, nrow(city_results)))
+```
+
+```{r load-lifetable, eval=FALSE}
+# Optional: Load detailed life table if available
+# Uncomment if you have saved detailed outputs for this city
+
+lifetable_path <- sprintf("../results/detailed/lifetables/%s_ssp2_adapt50.csv", 
+                          target_city_code)
+
+if (file.exists(lifetable_path)) {
+  lifetable <- fread(lifetable_path)
+  cat(sprintf("Loaded life table: %d ages\n", nrow(lifetable)))
+} else {
+  cat("Detailed life table not available. Run with --detailed flag to generate.\n")
+  lifetable <- NULL
+}
+```
+
+---
+
+# 3. Summary Statistics
+
+## 3.1 Overview Table
+
+**Methodological Note:**
+
+This table summarizes the projected impacts of climate change on life expectancy (LE) and lifespan inequality (LI) for the selected city across different adaptation scenarios. Life expectancy at age 20 ($e_{20}$) represents the expected remaining years of life. The Gini coefficient measures inequality in ages at death, where higher values indicate greater dispersion. The threshold age is the critical point below which additional deaths increase inequality, and above which they decrease it (Vaupel et al., 2011).
+
+```{r summary-table}
+# Aggregate statistics by SSP and adaptation
+summary_stats <- city_results[, .(
+  e20_baseline = mean(e20_base),
+  e20_climate = mean(e20_climate),
+  delta_e20_years = mean(delta_e20),
+  delta_e20_months = mean(delta_e20) * 12,
+  gini_baseline = mean(gini_base),
+  gini_climate = mean(gini_climate),
+  delta_gini = mean(delta_gini),
+  pct_change_gini = mean(pct_change_gini),
+  sd_baseline = mean(sd_base),
+  sd_climate = mean(sd_climate),
+  threshold_age = mean(threshold_age),
+  total_excess_deaths = mean(total_excess_deaths),
+  pct_deaths_below_threshold = mean(pct_below)
+), by = .(ssp, adaptation)]
+
+# Display for no adaptation scenario
+cat("\n=== No Adaptation (Baseline Climate Impact) ===\n")
+print(summary_stats[adaptation == 0, .(
+  ssp,
+  delta_e20_months = round(delta_e20_months, 1),
+  delta_gini = round(delta_gini, 5),
+  pct_change_gini = round(pct_change_gini, 2),
+  pct_deaths_below_threshold = round(pct_deaths_below_threshold, 1)
+)])
+
+# Display for 50% adaptation
+cat("\n=== 50% Adaptation by 2100 ===\n")
+print(summary_stats[adaptation == 0.5, .(
+  ssp,
+  delta_e20_months = round(delta_e20_months, 1),
+  delta_gini = round(delta_gini, 5),
+  pct_change_gini = round(pct_change_gini, 2),
+  pct_deaths_below_threshold = round(pct_deaths_below_threshold, 1)
+)])
+```
+
+---
+
+# 4. Life Expectancy Analysis
+
+## 4.1 Life Expectancy Changes Across Adaptation Scenarios
+
+**Interpretation Framework:**
+
+This plot shows how the climate-induced change in life expectancy at age 20 varies with adaptation effort. The adaptation parameter represents the fraction of excess temperature-related mortality risk that is eliminated by 2100, implemented linearly from 2030 onward. 
+
+**Key questions to consider:**
+
+- Is the relationship between adaptation and LE gain linear, or are there diminishing returns?
+- At what adaptation level does climate change become neutral or beneficial for longevity?
+- How does the effectiveness of adaptation differ between SSP scenarios?
+- What is the "adaptation gap" between SSP2 and SSP3?
+
+The error bars (if visible) represent uncertainty across climate models (GCMs). Crossing the zero line indicates the threshold where climate shifts from reducing to increasing life expectancy.
+
+```{r plot-le-adaptation}
+# Prepare data
+le_data <- city_results[, .(
+  adaptation = adaptation * 100,
+  ssp = factor(ssp, levels = ssps, labels = ssp_labels),
+  delta_e20 = delta_e20,
+  delta_e20_months = delta_e20 * 12
+)]
+
+# Main plot
+ggplot(le_data, aes(x = adaptation, y = delta_e20_months, color = ssp)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 3) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray30", linewidth = 0.8) +
+  scale_color_manual(
+    values = c("SSP2-4.5" = "#2166ac", "SSP3-7.0" = "#b2182b"),
+    name = "Scenario"
+  ) +
+  labs(
+    title = sprintf("Life Expectancy Response to Adaptation — %s", target_city_name),
+    subtitle = sprintf("Cohort born %d, tracked from age %d", 
+                       cohort_birth_year, cohort_start_age),
+    x = "Adaptation Level by 2100 (%)",
+    y = "Change in Life Expectancy (months)",
+    caption = "Positive values indicate longevity gains; negative values indicate losses.\nZero line marks adaptation threshold where climate becomes neutral."
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold"),
+    panel.grid.minor = element_blank()
+  )
+```
+
+---
+
+## 4.2 Decomposition: Which Adaptation Scenario Reverses Losses?
+
+**Methodological Context:**
+
+The "reversal threshold" is the minimum adaptation level required to offset climate-induced LE losses. This is a policy-relevant metric: it quantifies the adaptation effort needed to maintain current longevity trajectories under climate change.
+
+**Analytical considerations:**
+
+- Is the reversal threshold achievable within realistic policy constraints?
+- How does the threshold differ between moderate (SSP2) and high-emission (SSP3) pathways?
+- What does the slope of the curves tell us about marginal returns on adaptation investment?
+
+```{r reversal-threshold}
+# Calculate reversal threshold (adaptation level where delta_e20 crosses zero)
+reversal_thresholds <- city_results[, {
+  # Interpolate to find zero-crossing
+  if (any(delta_e20 < 0) & any(delta_e20 > 0)) {
+    adapt_below <- adaptation[delta_e20 < 0]
+    adapt_above <- adaptation[delta_e20 > 0]
+    
+    # Simple linear interpolation between closest points
+    idx_below <- which.max(delta_e20[delta_e20 < 0])
+    idx_above <- which.min(delta_e20[delta_e20 > 0])
+    
+    y1 <- delta_e20[delta_e20 < 0][idx_below]
+    y2 <- delta_e20[delta_e20 > 0][idx_above]
+    x1 <- adaptation[delta_e20 < 0][idx_below]
+    x2 <- adaptation[delta_e20 > 0][idx_above]
+    
+    threshold <- x1 + (0 - y1) * (x2 - x1) / (y2 - y1)
+    .(reversal_threshold = threshold * 100)
+  } else {
+    .(reversal_threshold = NA_real_)
+  }
+}, by = ssp]
+
+cat("\n=== Adaptation Required to Offset LE Losses ===\n")
+print(reversal_thresholds[, .(
+  ssp = factor(ssp, levels = ssps, labels = ssp_labels),
+  reversal_threshold = sprintf("%.1f%%", reversal_threshold)
+)])
+```
+
+---
+
+# 5. Lifespan Inequality Analysis
+
+## 5.1 The Life Expectancy–Inequality Paradox
+
+**Theoretical Background:**
+
+Classical demographic theory predicts that mortality reductions compress the distribution of ages at death, reducing inequality (Wilmoth & Horiuchi, 1999). However, climate change may violate this pattern if excess deaths are concentrated at ages below the threshold (typically around current LE). This scatter plot tests whether climate-induced mortality changes follow the classical compression pattern or represent a novel demographic regime.
+
+**Interpretation guide:**
+
+- **Quadrant I** (upper-right): LE increases but inequality also increases → "paradoxical" outcome
+- **Quadrant II** (upper-left): LE decreases and inequality increases → "double burden"
+- **Quadrant III** (lower-left): LE decreases but inequality decreases → "compression from mortality"
+- **Quadrant IV** (lower-right): LE increases and inequality decreases → "classical compression"
+
+Points far from the origin indicate stronger climate impacts. The color gradient shows adaptation levels.
+
+```{r plot-le-inequality-paradox}
+# Scatter plot: LE change vs Gini change
+paradox_data <- city_results[, .(
+  delta_e20,
+  delta_gini,
+  ssp = factor(ssp, levels = ssps, labels = ssp_labels),
+  adaptation = adaptation * 100
+)]
+
+ggplot(paradox_data, aes(x = delta_e20, y = delta_gini, color = adaptation)) +
+  geom_point(size = 4, alpha = 0.8) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "gray40") +
+  geom_smooth(aes(group = ssp), method = "lm", se = FALSE, 
+              linewidth = 0.8, linetype = "dotted") +
+  facet_wrap(~ ssp) +
+  scale_color_viridis(
+    name = "Adaptation\nLevel (%)",
+    option = "plasma",
+    direction = -1
+  ) +
+  labs(
+    title = "The Life Expectancy–Lifespan Inequality Relationship",
+    subtitle = sprintf("%s: Do LE gains compress or expand inequality?", target_city_name),
+    x = "Change in Life Expectancy at Age 20 (years)",
+    y = "Change in Gini Coefficient",
+    caption = "Quadrants: I = Paradoxical, II = Double burden, III = Compression, IV = Classical.\nPoints colored by adaptation level; trend lines show overall correlation."
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "right",
+    plot.title = element_text(face = "bold")
+  )
+```
+
+---
+
+## 5.2 Gini Coefficient Trajectories
+
+**Context:**
+
+The Gini coefficient for age at death typically ranges from 0.05 to 0.15 in low-mortality populations (Shkolnikov et al., 2003). Changes on the order of 0.001-0.005 represent meaningful shifts in population-level inequality. This plot tracks how climate-induced inequality evolves with adaptation effort.
+
+**Questions to explore:**
+
+- Does climate systematically increase or decrease lifespan inequality?
+- Is there an adaptation level that minimizes inequality, distinct from the level that maximizes LE?
+- Do SSP scenarios diverge more in their inequality impacts than in their LE impacts?
+
+```{r plot-gini-trajectories}
+gini_data <- city_results[, .(
+  adaptation = adaptation * 100,
+  ssp = factor(ssp, levels = ssps, labels = ssp_labels),
+  delta_gini = delta_gini,
+  pct_change_gini = pct_change_gini
+)]
+
+ggplot(gini_data, aes(x = adaptation, y = delta_gini, color = ssp)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 3) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray30") +
+  scale_color_manual(
+    values = c("SSP2-4.5" = "#2166ac", "SSP3-7.0" = "#b2182b"),
+    name = "Scenario"
+  ) +
+  scale_y_continuous(labels = label_number(accuracy = 0.0001)) +
+  labs(
+    title = "Lifespan Inequality Response to Adaptation",
+    subtitle = sprintf("%s: Change in Gini coefficient of age at death", target_city_name),
+    x = "Adaptation Level by 2100 (%)",
+    y = "Change in Gini Coefficient",
+    caption = "Positive values indicate increasing inequality (deaths more dispersed).\nNegative values indicate compression (deaths more concentrated)."
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold")
+  )
+```
+
+---
+
+# 6. Threshold Analysis
+
+## 6.1 The Demographic Threshold and Excess Death Distribution
+
+**Theoretical Foundation:**
+
+Demographic theory identifies a critical "threshold age" ($a^*$) such that deaths below this age increase lifespan inequality, while deaths above it decrease inequality (Zhang & Vaupel, 2009). The threshold is approximately where remaining life expectancy equals the population's life expectancy at the youngest age: $e_{a^*} \approx e_{20}$.
+
+This decomposition reveals the **mechanism** by which climate affects inequality, not just the magnitude. If climate predominantly increases mortality below $a^*$, it will expand inequality even if total deaths are modest.
+
+**Analytical questions:**
+
+- What proportion of climate-attributable deaths fall below the threshold?
+- Does this proportion change with adaptation?
+- How does the threshold age itself respond to climate (if at all)?
+
+```{r threshold-analysis}
+# Prepare threshold data
+threshold_data <- city_results[, .(
+  adaptation = adaptation * 100,
+  ssp = factor(ssp, levels = ssps, labels = ssp_labels),
+  threshold_age = threshold_age,
+  pct_below = pct_below,
+  pct_above = pct_above,
+  excess_below = excess_below_threshold,
+  excess_above = excess_above_threshold
+)]
+
+# Stacked bar chart
+threshold_long <- melt(
+  threshold_data,
+  id.vars = c("adaptation", "ssp"),
+  measure.vars = c("pct_below", "pct_above"),
+  variable.name = "position",
+  value.name = "percentage"
+)
+
+threshold_long[, position := factor(
+  position,
+  levels = c("pct_below", "pct_above"),
+  labels = c("Below threshold\n(increases LI)", "Above threshold\n(decreases LI)")
+)]
+
+ggplot(threshold_long, aes(x = adaptation, y = percentage, fill = position)) +
+  geom_col(position = "stack", width = 8) +
+  facet_wrap(~ ssp) +
+  scale_fill_manual(
+    values = c("Below threshold\n(increases LI)" = "#d73027",
+               "Above threshold\n(decreases LI)" = "#4575b4"),
+    name = "Death Location"
+  ) +
+  scale_y_continuous(labels = label_percent(scale = 1)) +
+  labs(
+    title = "Distribution of Climate-Attributable Deaths Relative to Threshold Age",
+    subtitle = sprintf("%s: Where do excess deaths occur?", target_city_name),
+    x = "Adaptation Level by 2100 (%)",
+    y = "Proportion of Excess Deaths (%)",
+    caption = sprintf("Threshold age ≈ %.0f years (where remaining LE ≈ LE at age %d).\nDeaths below threshold expand inequality; above threshold compress it.",
+                      mean(threshold_data$threshold_age), cohort_start_age)
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold")
+  )
+```
+
+---
+
+## 6.2 Threshold Stability Across Scenarios
+
+**Methodological Note:**
+
+A stable threshold age across scenarios suggests that climate primarily affects mortality levels, not the fundamental structure of the survival curve. A shifting threshold indicates more complex demographic regime change.
+
+```{r threshold-stability}
+threshold_summary <- threshold_data[, .(
+  mean_threshold = mean(threshold_age),
+  sd_threshold = sd(threshold_age),
+  min_threshold = min(threshold_age),
+  max_threshold = max(threshold_age)
+), by = ssp]
+
+cat("\n=== Threshold Age Stability ===\n")
+print(threshold_summary[, .(
+  ssp,
+  mean_threshold = round(mean_threshold, 1),
+  range = sprintf("%.1f - %.1f", min_threshold, max_threshold),
+  sd = round(sd_threshold, 2)
+)])
+
+# Plot threshold age trajectory
+ggplot(threshold_data, aes(x = adaptation, y = threshold_age, color = ssp)) +
+  geom_line(linewidth = 1.1) +
+  geom_point(size = 2.5) +
+  scale_color_manual(
+    values = c("SSP2-4.5" = "#2166ac", "SSP3-7.0" = "#b2182b"),
+    name = "Scenario"
+  ) +
+  labs(
+    title = "Threshold Age Across Adaptation Scenarios",
+    subtitle = sprintf("%s: Does climate shift the demographic threshold?", target_city_name),
+    x = "Adaptation Level by 2100 (%)",
+    y = "Threshold Age (years)",
+    caption = "Stable threshold suggests climate affects mortality levels, not survival curve structure."
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom")
+```
+
+---
+
+# 7. Multi-Metric Comparison
+
+## 7.1 Standard Deviation vs Gini Coefficient
+
+**Conceptual Distinction:**
+
+The Gini coefficient and standard deviation (SD) both measure dispersion but have different properties. Gini is scale-invariant and emphasizes distributional shape; SD is scale-dependent and emphasizes absolute variation. Concordance between the two suggests robust inequality patterns; divergence indicates complex distributional changes.
+
+**Interpretation considerations:**
+
+- Do Gini and SD move in the same direction?
+- Are there adaptation levels where they diverge?
+- What does this reveal about the nature of climate's impact on the age-at-death distribution?
+
+```{r plot-gini-vs-sd}
+inequality_metrics <- city_results[, .(
+  adaptation = adaptation * 100,
+  ssp = factor(ssp, levels = ssps, labels = ssp_labels),
+  delta_gini_std = (delta_gini - mean(delta_gini)) / sd(delta_gini),
+  delta_sd_std = (delta_sd - mean(delta_sd)) / sd(delta_sd)
+)]
+
+inequality_long <- melt(
+  inequality_metrics,
+  id.vars = c("adaptation", "ssp"),
+  measure.vars = c("delta_gini_std", "delta_sd_std"),
+  variable.name = "metric",
+  value.name = "standardized_change"
+)
+
+inequality_long[, metric := factor(
+  metric,
+  levels = c("delta_gini_std", "delta_sd_std"),
+  labels = c("Gini Coefficient", "Standard Deviation")
+)]
+
+ggplot(inequality_long, aes(x = adaptation, y = standardized_change, 
+                            color = metric, linetype = metric)) +
+  geom_line(linewidth = 1.1) +
+  geom_point(size = 2.5) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray40") +
+  facet_wrap(~ ssp) +
+  scale_color_manual(
+    values = c("Gini Coefficient" = "#d95f02", "Standard Deviation" = "#7570b3"),
+    name = "Metric"
+  ) +
+  scale_linetype_manual(
+    values = c("Gini Coefficient" = "solid", "Standard Deviation" = "dashed"),
+    name = "Metric"
+  ) +
+  labs(
+    title = "Comparison of Inequality Metrics",
+    subtitle = sprintf("%s: Gini vs Standard Deviation (standardized)", target_city_name),
+    x = "Adaptation Level by 2100 (%)",
+    y = "Standardized Change",
+    caption = "Both metrics standardized (mean = 0, SD = 1) for comparability.\nConcordance suggests robust inequality signal; divergence indicates complex distributional change."
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "bottom",
+    plot.title = element_text(face = "bold")
+  )
+```
+
+---
+
+## 7.2 Interquartile Range (IQR)
+
+**Metric Definition:**
+
+The IQR (75th percentile age − 25th percentile age) measures the spread of the "middle 50%" of deaths. It is robust to outliers and particularly informative for identifying compression or expansion in the core of the distribution.
+
+**Analytical lens:**
+
+- Does IQR follow the same pattern as Gini and SD?
+- If IQR is stable while Gini changes, what does this imply about tail behavior?
+
+```{r plot-iqr}
+iqr_data <- city_results[, .(
+  adaptation = adaptation * 100,
+  ssp = factor(ssp, levels = ssps, labels = ssp_labels),
+  delta_iqr = delta_iqr,
+  iqr_base = iqr_base,
+  iqr_climate = iqr_climate
+)]
+
+ggplot(iqr_data, aes(x = adaptation, y = delta_iqr, color = ssp)) +
+  geom_line(linewidth = 1.2) +
+  geom_point(size = 3) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray30") +
+  scale_color_manual(
+    values = c("SSP2-4.5" = "#2166ac", "SSP3-7.0" = "#b2182b"),
+    name = "Scenario"
+  ) +
+  labs(
+    title = "Interquartile Range of Age at Death",
+    subtitle = sprintf("%s: Climate impact on the middle 50%% of the distribution", 
+                       target_city_name),
+    x = "Adaptation Level by 2100 (%)",
+    y = "Change in IQR (years)",
+    caption = "IQR = Q75 - Q25. Measures spread of central half of deaths.\nRobust to tail behavior; focuses on core distribution."
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom")
+```
+
+---
+
+# 8. Age-at-Death Distribution (If Life Table Available)
+
+## 8.1 Distribution Comparison: Baseline vs Climate
+
+**Distributional Perspective:**
+
+The age-at-death distribution ($d_x$) provides the most complete view of mortality's distributional consequences. Unlike summary statistics, it reveals mode shifts, tail behavior, and multi-modality. The overlap between baseline and climate distributions quantifies the magnitude of demographic change.
+
+**Interpretive framework:**
+
+- Does climate shift the modal age at death?
+- Is the change primarily in the variance (spread) or in the location (mean)?
+- Are there age ranges with disproportionate impacts?
+
+```{r plot-age-distribution, eval=!is.null(lifetable)}
+if (!is.null(lifetable)) {
+  
+  # Normalize deaths to proportions
+  lifetable[, prop_dx_base := dx_base / sum(dx_base)]
+  lifetable[, prop_dx_climate := dx_climate / sum(dx_climate)]
+  
+  # Reshape for plotting
+  dx_long <- melt(
+    lifetable,
+    id.vars = "age",
+    measure.vars = c("prop_dx_base", "prop_dx_climate"),
+    variable.name = "scenario",
+    value.name = "proportion"
+  )
+  
+  dx_long[, scenario := factor(
+    scenario,
+    levels = c("prop_dx_base", "prop_dx_climate"),
+    labels = c("Baseline", "Climate")
+  )]
+  
+  # Get threshold age
+  threshold <- unique(lifetable$threshold_age)[1]
+  
+  ggplot(dx_long, aes(x = age, y = proportion, fill = scenario)) +
+    geom_area(alpha = 0.5, position = "identity") +
+    geom_vline(xintercept = threshold, linetype = "dashed", 
+               color = "black", linewidth = 0.8) +
+    annotate("text", x = threshold + 2, y = max(dx_long$proportion) * 0.9,
+             label = sprintf("Threshold\n(age %d)", round(threshold)),
+             hjust = 0, size = 3.5) +
+    scale_fill_manual(
+      values = c("Baseline" = "#1f77b4", "Climate" = "#d62728"),
+      name = "Scenario"
+    ) +
+    scale_y_continuous(labels = label_percent()) +
+    labs(
+      title = "Age-at-Death Distribution: Baseline vs Climate",
+      subtitle = sprintf("%s: SSP2, 50%% adaptation by 2100", target_city_name),
+      x = "Age at Death",
+      y = "Proportion of Deaths",
+      caption = "Overlapping areas show distributional similarity.\nDashed line marks threshold age (deaths below increase inequality)."
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(legend.position = "bottom")
+  
+} else {
+  cat("Life table not available. Run pipeline with --detailed flag to generate.\n")
+}
+```
+
+---
+
+## 8.2 Cumulative Distribution Function (CDF)
+
+**Analytical Advantage:**
+
+The CDF transforms the density into cumulative probabilities, making it easier to identify quantile shifts and first-order stochastic dominance. If the climate CDF lies uniformly to the left of baseline, climate unambiguously worsens mortality.
+
+```{r plot-cdf, eval=!is.null(lifetable)}
+if (!is.null(lifetable)) {
+  
+  # Compute CDFs
+  lifetable[, cdf_base := cumsum(dx_base) / sum(dx_base)]
+  lifetable[, cdf_climate := cumsum(dx_climate) / sum(dx_climate)]
+  
+  cdf_long <- melt(
+    lifetable,
+    id.vars = "age",
+    measure.vars = c("cdf_base", "cdf_climate"),
+    variable.name = "scenario",
+    value.name = "cumulative_prob"
+  )
+  
+  cdf_long[, scenario := factor(
+    scenario,
+    levels = c("cdf_base", "cdf_climate"),
+    labels = c("Baseline", "Climate")
+  )]
+  
+  ggplot(cdf_long, aes(x = age, y = cumulative_prob, color = scenario)) +
+    geom_line(linewidth = 1.2) +
+    geom_hline(yintercept = c(0.25, 0.5, 0.75), 
+               linetype = "dotted", color = "gray50") +
+    scale_color_manual(
+      values = c("Baseline" = "#1f77b4", "Climate" = "#d62728"),
+      name = "Scenario"
+    ) +
+    scale_y_continuous(labels = label_percent(), breaks = seq(0, 1, 0.25)) +
+    labs(
+      title = "Cumulative Distribution of Age at Death",
+      subtitle = sprintf("%s: Quantile shifts from climate change", target_city_name),
+      x = "Age",
+      y = "Cumulative Probability",
+      caption = "Horizontal lines mark quartiles (25%, 50%, 75%).\nLeftward shift indicates earlier deaths; rightward indicates later deaths."
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(legend.position = "bottom")
+  
+}
+```
+
+---
+
+# 9. Synthesis and Discussion
+
+## 9.1 Summary of Key Findings
+
+```{r synthesis-summary}
+# Extract key numbers for discussion
+no_adapt_ssp2 <- city_results[ssp == 2 & adaptation == 0]
+no_adapt_ssp3 <- city_results[ssp == 3 & adaptation == 0]
+adapt50_ssp2 <- city_results[ssp == 2 & adaptation == 0.5]
+
+cat("\n=== KEY FINDINGS SUMMARY ===\n\n")
+
+cat("1. LIFE EXPECTANCY IMPACTS (no adaptation):\n")
+cat(sprintf("   SSP2: %.2f years (%.1f months)\n", 
+            no_adapt_ssp2$delta_e20, no_adapt_ssp2$delta_e20 * 12))
+cat(sprintf("   SSP3: %.2f years (%.1f months)\n", 
+            no_adapt_ssp3$delta_e20, no_adapt_ssp3$delta_e20 * 12))
+
+cat("\n2. LIFESPAN INEQUALITY IMPACTS (no adaptation):\n")
+cat(sprintf("   SSP2: Gini change = %.5f (%.2f%% change)\n",
+            no_adapt_ssp2$delta_gini, no_adapt_ssp2$pct_change_gini))
+cat(sprintf("   SSP3: Gini change = %.5f (%.2f%% change)\n",
+            no_adapt_ssp3$delta_gini, no_adapt_ssp3$pct_change_gini))
+
+cat("\n3. THRESHOLD ANALYSIS (no adaptation):\n")
+cat(sprintf("   Threshold age: %.0f years\n", no_adapt_ssp2$threshold_age))
+cat(sprintf("   SSP2: %.1f%% of deaths below threshold\n", no_adapt_ssp2$pct_below))
+cat(sprintf("   SSP3: %.1f%% of deaths below threshold\n", no_adapt_ssp3$pct_below))
+
+cat("\n4. ADAPTATION EFFECTIVENESS (50% adaptation, SSP2):\n")
+cat(sprintf("   LE change: %.2f years vs %.2f years (no adapt)\n",
+            adapt50_ssp2$delta_e20, no_adapt_ssp2$delta_e20))
+cat(sprintf("   LE improvement: %.2f years (%.1f months)\n",
+            adapt50_ssp2$delta_e20 - no_adapt_ssp2$delta_e20,
+            (adapt50_ssp2$delta_e20 - no_adapt_ssp2$delta_e20) * 12))
+cat(sprintf("   Gini change: %.5f vs %.5f (no adapt)\n",
+            adapt50_ssp2$delta_gini, no_adapt_ssp2$delta_gini))
+```
+
+---
+
+## 9.2 Open Questions for Discussion
+
+**Methodological:**
+
+1. How sensitive are these results to the choice of cohort birth year (2020)?
+2. What is the role of cold-related mortality (winters) vs heat-related (summers)?
+3. How would results differ with a period life table instead of cohort?
+
+**Substantive:**
+
+1. What drives the LE-inequality relationship: age pattern of deaths or absolute magnitudes?
+2. Is the threshold age stable across all cities, or does it vary systematically?
+3. What are the welfare implications of inequality changes independent of LE?
+4. How do these city-level results aggregate to national or European-level patterns?
+
+**Policy:**
+
+1. What level of adaptation is technically and economically feasible?
+2. Should adaptation targets differ by region based on baseline vulnerability?
+3. How do these mortality impacts compare to adaptation costs?
+
+---
+
+## 9.3 Comparison with Existing Literature
+
+**Relevant benchmarks** (to be filled in with domain knowledge):
+
+- **Historical LE trends:** European LE has increased ~3 months/year over past decades
+- **Typical Gini values:** Low-mortality populations: 0.05-0.10
+- **Climate mortality estimates:** WHO projects X thousand deaths/year by 2030-2050
+- **Inequality trends:** Most developed countries show LI compression over 20th century
+
+**Novel contributions of this analysis:**
+
+1. Cohort-based projections (vs cross-sectional)
+2. Explicit inequality metrics (vs mortality counts)
+3. Threshold decomposition (mechanistic understanding)
+4. Adaptation scenario modeling (policy relevance)
+
+---
+
+# 10. Technical Appendix
+
+## 10.1 Data Provenance
+
+```{r data-provenance}
+cat("\n=== DATA SOURCES ===\n\n")
+
+cat("Temperature projections:\n")
+cat("  - Source: CMIP6 ensemble\n")
+cat("  - GCMs: 19 models (excluding CMCC_CM2_SR5, TaiESM1)\n")
+cat("  - Resolution: Daily mean temperature\n")
+cat("  - Period: 1991-2100\n\n")
+
+cat("Exposure-Response Functions:\n")
+cat("  - Source: Masselot et al. (2023)\n")
+cat("  - Age groups: 5 (20-44, 45-64, 65-74, 75-84, 85+)\n")
+cat("  - Interpolation: Linear to single-year ages 20-100\n")
+cat("  - Basis: B-spline (degree 2, knots at 10th, 75th, 90th percentile)\n\n")
+
+cat("Baseline mortality:\n")
+cat("  - Source: Eurostat EUROPOP2023 (or synthetic Gompertz)\n")
+cat("  - Age range: 20-100\n")
+cat("  - Period: 2015-2100\n\n")
+
+cat("Cohort definition:\n")
+cat(sprintf("  - Birth year: %d\n", cohort_birth_year))
+cat(sprintf("  - Start age: %d (year %d)\n", cohort_start_age, 
+            cohort_birth_year + cohort_start_age))
+cat(sprintf("  - Radix: %s\n", format(100000, big.mark = ",")))
+```
+
+---
+
+## 10.2 Computational Pipeline
+
+```{r pipeline-summary}
+cat("\n=== PIPELINE STAGES ===\n\n")
+
+cat("Stage 1: City Precomputation\n")
+cat("  - Input: Temperature data, ERF coefficients\n")
+cat("  - Output: Precomputed RR surfaces, baseline risk\n")
+cat("  - Format: RDS (compressed binary)\n\n")
+
+cat("Stage 2: Scenario Grid\n")
+cat("  - Input: Precomputed city data, mortality projections\n")
+cat("  - Scenarios: 854 cities × 2 SSPs × 11 adaptation levels\n")
+cat("  - Output: Lifespan inequality summary (CSV)\n")
+cat("  - Parallel: 4-8 workers\n\n")
+
+cat("This notebook:\n")
+cat("  - Loads: Stage 2 results only (no heavy computation)\n")
+cat("  - Focus: Single-city deep dive with visualizations\n")
+cat("  - Reproducible: Change target_city_code to analyze any city\n")
+```
+
+---
+
+## 10.3 Session Information
+
+```{r session-info}
+sessionInfo()
+```
+
+---
+
+# References
+
+- Masselot, P., et al. (2023). Excess mortality attributed to heat and cold: a health impact assessment study in 854 cities in Europe. *The Lancet Planetary Health*.
+
+- Shkolnikov, V. M., Andreev, E. M., & Begun, A. Z. (2003). Gini coefficient as a life table function: Computation from discrete data, decomposition of differences and empirical examples. *Demographic Research*, 8, 305-358.
+
+- Vaupel, J. W., Zhang, Z., & van Raalte, A. A. (2011). Life expectancy and disparity: an international comparison of life table data. *BMJ Open*, 1(1), e000128.
+
+- Wilmoth, J. R., & Horiuchi, S. (1999). Rectangularization revisited: Variability of age at death within human populations. *Demography*, 36(4), 475-495.
+
+- Zhang, Z., & Vaupel, J. W. (2009). The age separating early deaths from late deaths. *Demographic Research*, 20, 721-730.
+
+---
+
+**End of Analysis**
+
+*To analyze a different city, change `target_city_code` in Section 1 and re-run the entire notebook.*
