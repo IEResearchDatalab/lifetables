@@ -46,8 +46,8 @@ We begin by selecting the analysis parameters:
 ```{r setup}
 city <- "Vienna"
 city_code <- "AT001C"
-scenario <- 2  # SSP2-4.5
-adaptation_level <- 0.5  # 50% risk reduction by 2100
+scenario <- 3  # SSP3-7.0
+adaptation_level <- 0.2  # 20% risk reduction by 2100
 
 cat(sprintf("Analysis Configuration:\n"))
 cat(sprintf("  City: %s (%s)\n", city, city_code))
