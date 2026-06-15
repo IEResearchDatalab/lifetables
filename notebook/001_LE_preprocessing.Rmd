@@ -1,9 +1,24 @@
 ---
 title: "Heat-Related Mortality and Lifespan Inequality"
 subtitle: "Climate Projection Analysis for European Cities"
-author: "Simon Project"
+author: "Daniel Precioso"
 date: "`r Sys.Date()`"
-output: html_document
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    code_folding: show
+    theme: flatly
+    fig_width: 10
+    fig_height: 6
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    fig_width: 10
+    fig_height: 6
+    keep_tex: false
 ---
 
 # Overview
@@ -410,9 +425,9 @@ cat(sprintf("  2100: %.2f (%.0f%% reduction)\n",
 
 To reduce dataset size and facilitate comparison with baseline, we aggregate daily RR to **annual means** by age and GCM:
 
-$
+$$
 \overline{RR}_{a,y,g} = \frac{1}{365} \sum_{d=1}^{365} RR_{a,d,y,g}
-$
+$$
 
 This represents the average mortality risk for each age, year, and climate model.
 
@@ -844,42 +859,64 @@ head(mort_climate, 15)
 
 ## 10.2 Comparison: Baseline vs Climate Mortality
 
+We now examine the **relative impact** of climate change on mortality by computing the percentage change at each age and year.
+
+**Formula:** 
+$$
+\text{Percentage change} = \frac{mx_{\text{climate}} - mx_{\text{baseline}}}{mx_{\text{baseline}}} \times 100\%
+$$
+
+**Interpretation:**
+- Positive values: Climate **increases** mortality risk (worse outcomes)
+- Negative values: Climate **decreases** mortality risk (e.g., reduced cold-related deaths)
+- Magnitude indicates the **relative impact** - a 5% increase at age 30 has different absolute consequences than 5% at age 90
+
 ```{r compare-mortality}
+# Compute percentage change
+mort_climate[, pct_change := ((mx_climate - mx) / mx) * 100]
+
 # Summary statistics
 comparison <- mort_climate[year >= 2050, .(
   mean_mx_base    = mean(mx),
   mean_mx_climate = mean(mx_climate),
   mean_multiplier = mean(multiplier),
-  max_multiplier  = max(multiplier)
+  mean_pct_change = mean(pct_change),
+  max_pct_change  = max(pct_change),
+  min_pct_change  = min(pct_change)
 ), by = year]
 
 cat("\n=== Mortality Comparison: Baseline vs Climate (2050+) ===\n")
 print(comparison[year %in% c(2050, 2070, 2090, 2099)])
 
-# Visualize the impact
+# Visualize percentage change
 ggplot(mort_climate[year %in% c(2050, 2070, 2099)], 
-       aes(x = age)) +
-  geom_line(aes(y = mx, color = "Baseline"), linewidth = 1) +
-  geom_line(aes(y = mx_climate, color = "Climate-adjusted"), 
-            linewidth = 1, linetype = "dashed") +
+       aes(x = age, y = pct_change)) +
+  geom_hline(yintercept = 0, linetype = "solid", color = "gray30", linewidth = 0.5) +
+  geom_line(linewidth = 1.2, color = "#d62728") +
+  geom_ribbon(aes(ymin = 0, ymax = pct_change, fill = pct_change > 0), alpha = 0.3) +
   facet_wrap(~ year, ncol = 3) +
-  scale_y_log10(labels = scales::label_comma()) +
-  scale_color_manual(
-    name = "Scenario",
-    values = c("Baseline" = "#1f77b4", "Climate-adjusted" = "#d62728")
+  scale_fill_manual(
+    values = c("TRUE" = "#d62728", "FALSE" = "#2166ac"),
+    labels = c("TRUE" = "Increased risk", "FALSE" = "Decreased risk"),
+    name = ""
   ) +
+  scale_y_continuous(labels = function(x) paste0(x, "%")) +
   labs(
-    title = sprintf("Mortality Impact of Climate Change — %s (SSP%d)", city, scenario),
-    subtitle = sprintf("Adaptation: %.0f%% by 2100", adaptation_level * 100),
+    title = sprintf("Relative Mortality Impact of Climate Change — %s (SSP%d)", 
+                    city, scenario),
+    subtitle = sprintf("Adaptation: %.0f%% by 2100 | Percentage change in death rates",
+                       adaptation_level * 100),
     x = "Age",
-    y = "Central Death Rate (mx)",
-    caption = "Log scale"
+    y = "Change in Mortality Rate (%)",
+    caption = "Positive values indicate increased mortality risk; negative values indicate decreased risk"
   ) +
   theme_minimal(base_size = 12) +
-  theme(legend.position = "bottom")
+  theme(
+    legend.position = "bottom",
+    panel.grid.minor = element_blank(),
+    strip.text = element_text(face = "bold", size = 11)
+  )
 ```
-
-**Key observation**: Climate multipliers increase mortality, especially at older ages in later years.
 
 ---
 
@@ -1054,32 +1091,48 @@ if (delta_e20 < 0) {
 
 ---
 
-## 12.2 Life Expectancy by Age
+## 12.2 Life Expectancy Difference by Age
+
+We visualize the difference in remaining life expectancy at each age.
+
+**Formula:**
+$$
+\Delta e_x = e_{x,\text{climate}} - e_{x,\text{baseline}}
+$$
+
+**Interpretation:**
+- Positive values ($\Delta e_x > 0$): Climate **increases** remaining LE (e.g., reduced cold mortality)
+- Negative values ($\Delta e_x < 0$): Climate **decreases** remaining LE (increased heat mortality)
+- Magnitude represents years of expected life gained/lost due to climate change
 
 ```{r life-expectancy-by-age}
-# Plot life expectancy across ages
-ex_data <- lifetable[, .(
-  age,
-  Baseline = ex_base,
-  Climate = ex_climate
-)]
+# Compute difference in life expectancy
+lifetable[, delta_ex := ex_climate - ex_base]
 
-ex_long <- melt(ex_data, id.vars = "age", 
-                variable.name = "Scenario", value.name = "ex")
-
-ggplot(ex_long, aes(x = age, y = ex, color = Scenario)) +
-  geom_line(linewidth = 1) +
-  scale_color_manual(
-    values = c("Baseline" = "#1f77b4", "Climate" = "#d62728")
+ggplot(lifetable, aes(x = age, y = delta_ex)) +
+  geom_hline(yintercept = 0, linetype = "solid", color = "gray30", linewidth = 0.8) +
+  geom_line(linewidth = 1.2, color = "#d62728") +
+  geom_ribbon(aes(ymin = 0, ymax = delta_ex, fill = delta_ex > 0), alpha = 0.3) +
+  scale_fill_manual(
+    values = c("TRUE" = "#2166ac", "FALSE" = "#d62728"),
+    labels = c("TRUE" = "LE gain", "FALSE" = "LE loss"),
+    name = "Climate impact"
   ) +
   labs(
-    title = sprintf("Life Expectancy by Age — Cohort Born %d", cohort_birth_year),
-    subtitle = sprintf("%s, SSP%d, Adaptation %.0f%%", city, scenario, adaptation_level * 100),
+    title = sprintf("Climate Impact on Remaining Life Expectancy — Cohort Born %d",
+                    cohort_birth_year),
+    subtitle = sprintf("%s, SSP%d, Adaptation %.0f%%", 
+                       city, scenario, adaptation_level * 100),
     x = "Age",
-    y = "Remaining Life Expectancy (years)"
+    y = "Change in Remaining Life Expectancy (years)",
+    caption = "Positive values: climate increases LE | Negative values: climate decreases LE"
   ) +
   theme_minimal(base_size = 12) +
-  theme(legend.position = "bottom")
+  theme(
+    legend.position = "bottom",
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(face = "bold")
+  )
 ```
 
 ---
@@ -1251,7 +1304,7 @@ $$
 G = \frac{\sum_{i=1}^{n} \sum_{j=1}^{n} |x_i - x_j| \cdot w_i \cdot w_j}{2 \cdot \bar{x} \cdot \sum_{i=1}^{n} w_i^2}
 $$
 
-where $$x_i$$ = age, $$w_i$$ = deaths at that age.
+where $x_i$ = age, $w_i$ = deaths at that age.
 
 ```{r compute-gini}
 # Gini coefficient function
