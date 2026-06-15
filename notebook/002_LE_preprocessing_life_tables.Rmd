@@ -36,10 +36,12 @@ knitr::opts_chunk$set(
 This notebook (Part 2) constructs **cohort life tables** and analyzes **lifespan inequality** using mortality multipliers computed in Part 1.
 
 **Prerequisites**: You must run **Part 1** first to generate:
+
 - Mortality multipliers by age and year
 - Configuration choices for city, scenario, and adaptation
 
 **This notebook covers**:
+
 1. Setting explicit analysis parameters
 2. Validating age and year coverage before analysis
 3. Loading baseline mortality projections (Eurostat EUROPOP2023)
