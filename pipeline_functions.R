@@ -528,10 +528,46 @@ compute_iqr_age_at_death <- function(ages, deaths) {
   return(list(q25 = q25, q75 = q75, iqr = iqr))
 }
 
-#' Save detailed outputs (optional)
+#' Save detailed outputs for a scenario
 save_detailed_outputs <- function(city_code, ssp, adaptation, 
-                                 lifetable, multipliers, li_results) {
-  # Placeholder for detailed output saving
-  # Implement if needed
-  return(invisible(NULL))
+                                  lifetable, multipliers, li_results,
+                                  output_dir = "results/detailed") {
+  
+  # Create directories
+  dir.create(file.path(output_dir, "lifetables"), 
+             showWarnings = FALSE, recursive = TRUE)
+  dir.create(file.path(output_dir, "multipliers"), 
+             showWarnings = FALSE, recursive = TRUE)
+  dir.create(file.path(output_dir, "excess_deaths"), 
+             showWarnings = FALSE, recursive = TRUE)
+  
+  # Save life table
+  if (!is.null(lifetable)) {
+    lt_path <- sprintf("%s/lifetables/%s_ssp%d_adapt%02d.csv",
+                       output_dir, city_code, ssp, adaptation * 100)
+    fwrite(lifetable, lt_path)
+  }
+  
+  # Save multipliers
+  if (!is.null(multipliers)) {
+    mult_path <- sprintf("%s/multipliers/%s_ssp%d_adapt%02d.csv",
+                         output_dir, city_code, ssp, adaptation * 100)
+    fwrite(multipliers, mult_path)
+  }
+  
+  # Save age-specific excess deaths
+  if (!is.null(lifetable)) {
+    excess <- lifetable[, .(
+      age, year,
+      dx_base, dx_climate,
+      excess_deaths = dx_climate - dx_base,
+      multiplier
+    )]
+    
+    excess_path <- sprintf("%s/excess_deaths/%s_ssp%d_adapt%02d.csv",
+                           output_dir, city_code, ssp, adaptation * 100)
+    fwrite(excess, excess_path)
+  }
+  
+  invisible(TRUE)
 }
