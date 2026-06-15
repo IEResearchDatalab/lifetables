@@ -76,8 +76,12 @@ vignettes/*.pdf
 # R Environment Variables
 .Renviron
 
+# Data and outputs
 cordex_data/
 precomputed/
+notebook/*.html
+notebook/*.pdf
+notebook/*.png
 
 # This folder contains data for copilot
 context/
