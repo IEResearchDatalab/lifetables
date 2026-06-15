@@ -260,6 +260,7 @@ head(multipliers, 10)
 ```
 
 **Data structure**:
+
 - `year`: Calendar year of the climate multiplier
 - `age`: Single-year age
 - `multiplier_mean`: Ensemble mean across GCMs
@@ -569,9 +570,37 @@ head(mort_climate, 15)
 
 ## 3.2 Comparison: Baseline vs Climate Mortality
 
+```{r compare-mortality-summary}
+mort_sample <- mort_proj[year %in% sample_years & age %in% sample_ages,
+                         .(age, year, mx)]
+mort_sample[, scenario := "Baseline"]
+
+mort_sample_climate <- mort_climate[year %in% sample_years & age %in% sample_ages,
+                                    .(age, year, mx = mx_climate)]
+mort_sample_climate[, scenario := "Climate"]
+
+# Compare both scenarios as subplots (side by side)
+plot_data <- rbind(mort_sample, mort_sample_climate)
+
+ggplot(plot_data, aes(x = age, y = mx, color = factor(year), group = year)) +
+  geom_line(linewidth = 1) +
+  facet_wrap(~scenario, ncol = 2) +
+  scale_y_log10(labels = label_comma()) +
+  scale_color_viridis_d(name = "Year") +
+  labs(
+    title = "Mortality Rates by Age",
+    subtitle = "Eurostat EUROPOP2023 projections with analysis-tail extension where configured",
+    x = "Age",
+    y = "Central Death Rate (mx)",
+    caption = "Log scale"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
 We examine the **relative impact** of climate change on mortality by computing percentage change.
 
 **Formula:**
+
 $$
 \text{Percentage change} = \frac{mx_{\text{climate}} - mx_{\text{baseline}}}{mx_{\text{baseline}}} \times 100\%
 $$
