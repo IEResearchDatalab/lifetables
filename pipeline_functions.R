@@ -187,23 +187,28 @@ compute_scenario <- function(city_code, target_ssp, adaptation,
                             output_detailed = FALSE,
                             cohort_birth_year = 2020,
                             cohort_start_age = 20,
-                            radix = 100000) {
-  
+                            radix = 100000,
+                            sex_code = "M") {
+
   start_time <- Sys.time()
-  
+
   tryCatch({
     # 1. Load precomputed data
     precomp_file <- file.path(precomputed_dir, sprintf("%s.rds", city_code))
     city_data <- readRDS(precomp_file)
-    
+
     # 2. Compute multipliers
     multipliers <- compute_multipliers_for_scenario(
       city_data, target_ssp, adaptation
     )
-    
-    # 3. Load baseline mortality
-    mort_proj <- load_baseline_mortality(city_code, mort_proj_dir)
-    
+
+    # 3. Load baseline mortality from Eurostat (male)
+    mort_proj <- load_baseline_mortality(
+      city_code = city_code,
+      mort_proj_dir = mort_proj_dir,
+      sex_code = sex_code
+    )
+
     # 4. Apply multipliers
     mort_climate <- merge(
       mort_proj,
@@ -213,7 +218,7 @@ compute_scenario <- function(city_code, target_ssp, adaptation,
     )
     mort_climate[is.na(multiplier), multiplier := 1.0]
     mort_climate[, mx_climate := mx * multiplier]
-    
+
     # 5. Build cohort life table
     lifetable <- build_cohort_lifetable(
       mort_climate,
@@ -221,35 +226,36 @@ compute_scenario <- function(city_code, target_ssp, adaptation,
       start_age = cohort_start_age,
       radix = radix
     )
-    
+
     # 6. Compute lifespan inequality
     li_results <- compute_lifespan_inequality(
       lifetable, cohort_start_age, radix
     )
-    
+
     # 7. Add metadata
     li_results[, `:=`(
       city_code = city_code,
       ssp = target_ssp,
       adaptation = adaptation,
+      sex = sex_code,
       runtime_sec = as.numeric(difftime(Sys.time(), start_time, units = "secs"))
     )]
-    
+
     # 8. Save detailed outputs (optional)
     if (output_detailed) {
-      save_detailed_outputs(city_code, target_ssp, adaptation, 
+      save_detailed_outputs(city_code, target_ssp, adaptation,
                            lifetable, multipliers, li_results)
     }
-    
-    cat(sprintf("[%s] Completed %s | SSP%d | Adapt%.0f%% | %.1fs\n",
+
+    cat(sprintf("[%s] Completed %s | SSP%d | Adapt%.0f%% | Sex=%s | %.1fs\n",
                 Sys.time(), city_code, target_ssp, adaptation * 100,
-                li_results$runtime_sec))
-    
+                sex_code, li_results$runtime_sec))
+
     return(li_results)
-    
+
   }, error = function(e) {
-    cat(sprintf("[ERROR] %s | SSP%d | Adapt%.0f%%: %s\n",
-                city_code, target_ssp, adaptation * 100, e$message))
+    cat(sprintf("[ERROR] %s | SSP%d | Adapt%.0f%% | Sex=%s: %s\n",
+                city_code, target_ssp, adaptation * 100, sex_code, e$message))
     return(NULL)
   })
 }
@@ -330,26 +336,110 @@ compute_multipliers_for_scenario <- function(city_data, target_ssp, adaptation) 
 }
 
 #' Load baseline mortality (Eurostat or synthetic)
-load_baseline_mortality <- function(city_code, mort_proj_dir) {
-  
-  # Extract country code (first 2 characters)
+load_baseline_mortality <- function(city_code,
+                                    mort_proj_dir,
+                                    sex_code = "M",
+                                    dataset_id = "proj_23naasmr",
+                                    projection_code = "BSL",
+                                    year_min = 2022,
+                                    year_max = 2100,
+                                    age_min = 20,
+                                    age_max = 100) {
+
+  # Extract country code from the city code (e.g. AT001C -> AT)
   country_code <- substr(city_code, 1, 2)
-  
-  # Try to load Eurostat data
-  mort_file <- file.path(mort_proj_dir, sprintf("%s_mortality.csv", country_code))
-  
+  sex_label <- if (sex_code == "F") {
+    "female"
+  } else if (sex_code == "M") {
+    "male"
+  } else {
+    stop("Unsupported sex_code: ", sex_code)
+  }
+
+  mort_file <- file.path(
+    mort_proj_dir,
+    sprintf("%s_mortality_%s.csv", country_code, sex_label)
+  )
+
   if (file.exists(mort_file)) {
     mort_proj <- fread(mort_file)
-    mort_proj <- mort_proj[age >= 20 & age <= 100 & year >= 2015 & year <= 2100]
   } else {
-    # Generate synthetic Gompertz mortality
-    mort_proj <- CJ(age = 20:100, year = 2015:2100)
-    
-    a <- 0.0001
-    b <- 0.08
-    mort_proj[, mx := a * exp(b * age) * (0.99 ^ ((year - 2015) / 10))]
+    raw <- as.data.table(eurostat::get_eurostat(
+      id = dataset_id,
+      filters = list(
+        geo = country_code,
+        projection = projection_code,
+        sex = sex_code,
+        sinceTimePeriod = year_min,
+        untilTimePeriod = year_max
+      ),
+      time_format = "num",
+      type = "code",
+      stringsAsFactors = FALSE
+    ))
+
+    if (nrow(raw) == 0L) {
+      stop("Eurostat returned zero rows for ", dataset_id,
+           " / ", country_code, " / ", projection_code,
+           " / sex=", sex_code)
+    }
+    if (!identical(sort(unique(raw$projection)), projection_code)) {
+      stop("Unexpected projection values returned: ",
+           paste(sort(unique(raw$projection)), collapse = ", "))
+    }
+    if (!identical(sort(unique(raw$sex)), sex_code)) {
+      stop("Unexpected sex values returned: ",
+           paste(sort(unique(raw$sex)), collapse = ", "))
+    }
+    if (data.table::uniqueN(raw$unit) != 1L) {
+      stop("Eurostat returned multiple units: ",
+           paste(sort(unique(raw$unit)), collapse = ", "))
+    }
+    if (nrow(raw[, .N, by = .(age, time)][N > 1L]) > 0L) {
+      stop("Eurostat returned duplicate age-year rows after filtering.")
+    }
+
+    raw[, age_num := fifelse(
+      age == "Y_LT1", 0L,
+      fifelse(age == "Y_GE100", 100L, as.integer(sub("^Y", "", age)))
+    )]
+
+    mort_proj <- raw[
+      age_num >= age_min & age_num <= age_max,
+      .(
+        age = age_num,
+        year = as.integer(time),
+        mx = as.numeric(values)
+      )
+    ]
+
+    if (nrow(mort_proj) == 0L) {
+      stop("No mortality rows left after converting ages and filtering to ages ",
+           age_min, "-", age_max, ".")
+    }
+    if (anyNA(mort_proj$age) || anyNA(mort_proj$year) || anyNA(mort_proj$mx)) {
+      stop("Missing values detected in converted mortality data.")
+    }
+    if (nrow(mort_proj[, .N, by = .(age, year)][N > 1L]) > 0L) {
+      stop("Converted mortality data still contain duplicate age-year rows.")
+    }
+
+    dir.create(mort_proj_dir, recursive = TRUE, showWarnings = FALSE)
+    fwrite(mort_proj, mort_file)
   }
-  
+
+  mort_proj <- mort_proj[age >= age_min & age <= age_max & year >= year_min & year <= year_max]
+
+  if (nrow(mort_proj) == 0L) {
+    stop("Baseline mortality table is empty after final filtering.")
+  }
+  if (nrow(mort_proj[, .N, by = .(age, year)][N > 1L]) > 0L) {
+    stop("Baseline mortality table contains duplicate age-year rows.")
+  }
+  if (anyNA(mort_proj$mx)) {
+    stop("Baseline mortality table contains missing mx values.")
+  }
+
   setkey(mort_proj, year, age)
   return(mort_proj)
 }
