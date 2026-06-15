@@ -77,7 +77,8 @@ projection_code <- "BSL"
 baseline_year_min <- 2022
 baseline_year_max <- 2100
 age_min <- 20
-age_max <- 100
+age_max_source <- 100           # maximum age available from the raw source
+age_max <- 120                  # analysis tail age after constant age extension
 extend_baseline_constant <- TRUE
 extend_multiplier_constant <- TRUE
 
@@ -88,7 +89,7 @@ sample_ages <- c(30, 50, 70, 90)
 # Cohort settings
 cohort_birth_year <- 2002
 cohort_start_age <- 20
-cohort_terminal_age <- 100   # use age 100+ as the open terminal interval
+cohort_terminal_age <- 120      # extended terminal age for approximate full death distribution
 radix <- 100000
 require_full_coverage <- TRUE
 
@@ -119,7 +120,8 @@ cat(sprintf("  Adaptation by 2100: %.0f%%\n", adaptation_level * 100))
 cat(sprintf("  Baseline geography: %s\n", geo_code))
 cat(sprintf("  Baseline sex: %s (%s)\n", sex_code, sex_label))
 cat(sprintf("  Eurostat dataset: %s | projection = %s\n", mortality_dataset_id, projection_code))
-cat(sprintf("  Baseline ages: %d–%d\n", age_min, age_max))
+cat(sprintf("  Baseline source ages: %d–%d\n", age_min, age_max_source))
+cat(sprintf("  Analysis ages after tail extension: %d–%d\n", age_min, age_max))
 cat(sprintf("  Eurostat source years: %d–%d\n", baseline_year_min, baseline_year_max))
 cat(sprintf("  Extend baseline constant outside source years: %s\n", ifelse(extend_baseline_constant, "TRUE", "FALSE")))
 cat(sprintf("  Extend multipliers constant after last source year: %s\n", ifelse(extend_multiplier_constant, "TRUE", "FALSE")))
@@ -170,6 +172,28 @@ extend_year_constant <- function(dt, target_year_min = NULL, target_year_max = N
   out
 }
 
+extend_age_constant <- function(dt, target_age_max, source_age_max = max(dt$age)) {
+  dt <- copy(dt)
+  out <- copy(dt)
+
+  if (target_age_max > source_age_max) {
+    template_max <- dt[age == source_age_max]
+    future_ages <- (source_age_max + 1L):target_age_max
+    age_ext <- rbindlist(lapply(future_ages, function(a) {
+      tmp <- copy(template_max)
+      tmp[, age := a]
+      if ("agegroup" %in% names(tmp)) tmp[, agegroup := a]
+      if ("decade" %in% names(tmp)) tmp[, decade := (a %/% 10L) * 10L]
+      tmp
+    }))
+    out <- rbindlist(list(out, age_ext), use.names = TRUE, fill = TRUE)
+  }
+
+  out <- unique(out, by = c("age", "year"))
+  setorder(out, year, age)
+  out
+}
+
 if (!file.exists(mult_path)) {
   stop("Mortality multipliers file not found: ", mult_path,
        "\nRun Part 1 first using the same city/scenario configuration.")
@@ -188,6 +212,7 @@ requested_year_min <- min(c(sample_years, cohort_birth_year + cohort_start_age))
 requested_year_max <- max(c(sample_years, cohort_birth_year + cohort_terminal_age))
 mult_source_year_min <- min(multipliers$year)
 mult_source_year_max <- max(multipliers$year)
+mult_source_age_max <- max(multipliers$age)
 
 if (extend_multiplier_constant) {
   multipliers <- extend_year_constant(
@@ -197,12 +222,21 @@ if (extend_multiplier_constant) {
   )
 }
 
+if (cohort_terminal_age > mult_source_age_max) {
+  multipliers <- extend_age_constant(
+    multipliers,
+    target_age_max = cohort_terminal_age,
+    source_age_max = mult_source_age_max
+  )
+}
+
 cat(sprintf("\n=== Mortality Multipliers Loaded ===\n"))
 cat(sprintf("  File: %s\n", mult_path))
 cat(sprintf("  Records: %s\n", format(nrow(multipliers), big.mark = ",")))
 cat(sprintf("  Source years: %d–%d\n", mult_source_year_min, mult_source_year_max))
 cat(sprintf("  Analysis years after extension: %d–%d\n", min(multipliers$year), max(multipliers$year)))
-cat(sprintf("  Ages: %d–%d\n", min(multipliers$age), max(multipliers$age)))
+cat(sprintf("  Source ages: %d–%d\n", min(multipliers$age[multipliers$year <= mult_source_year_max]), mult_source_age_max))
+cat(sprintf("  Analysis ages after extension: %d–%d\n", min(multipliers$age), max(multipliers$age)))
 cat(sprintf("  Mean multiplier: %.4f\n", mean(multipliers$multiplier_mean)))
 cat(sprintf("  Multiplier range: [%.3f, %.3f]\n",
             min(multipliers$multiplier_mean), max(multipliers$multiplier_mean)))
@@ -234,14 +268,14 @@ cohort_terminal_year <- cohort_birth_year + cohort_terminal_age
 requested_year_min <- min(c(sample_years, cohort_start_year))
 requested_year_max <- max(c(sample_years, cohort_terminal_year))
 
-max_terminal_age_baseline_raw <- min(age_max, baseline_year_max - cohort_birth_year)
-max_terminal_age_multiplier_raw <- min(age_max, mult_source_year_max - cohort_birth_year)
+max_terminal_age_baseline_raw <- min(age_max_source, baseline_year_max - cohort_birth_year)
+max_terminal_age_multiplier_raw <- min(mult_source_age_max, mult_source_year_max - cohort_birth_year)
 max_terminal_age_full <- if (extend_baseline_constant && extend_multiplier_constant) {
   age_max
 } else if (extend_baseline_constant && !extend_multiplier_constant) {
   min(age_max, max_terminal_age_multiplier_raw)
 } else if (!extend_baseline_constant && extend_multiplier_constant) {
-  min(age_max, max_terminal_age_baseline_raw)
+  min(age_max_source, max_terminal_age_baseline_raw)
 } else {
   min(max_terminal_age_baseline_raw, max_terminal_age_multiplier_raw)
 }
@@ -250,7 +284,7 @@ if (cohort_start_age < age_min) {
   stop("cohort_start_age is below the baseline mortality age range.")
 }
 if (cohort_terminal_age > age_max) {
-  stop("cohort_terminal_age exceeds the baseline mortality age range.")
+  stop("cohort_terminal_age exceeds the configured analysis age range.")
 }
 if (cohort_terminal_age < cohort_start_age) {
   stop("cohort_terminal_age must be greater than or equal to cohort_start_age.")
@@ -273,9 +307,9 @@ if (cohort_start_age < mult_age_min || cohort_terminal_age > mult_age_max) {
   stop("The requested cohort age range lies outside the multiplier age range: ",
        mult_age_min, "–", mult_age_max)
 }
-if (any(sample_ages < age_min | sample_ages > age_max)) {
-  stop("sample_ages must lie within the baseline mortality age range: ",
-       age_min, "–", age_max)
+if (any(sample_ages < age_min | sample_ages > age_max_source)) {
+  stop("sample_ages must lie within the raw baseline mortality age range: ",
+       age_min, "–", age_max_source)
 }
 if (cohort_terminal_age > max_terminal_age_full) {
   stop(
@@ -293,15 +327,23 @@ analysis_year_max <- requested_year_max
 cat(sprintf("\n=== Coverage Validation Passed ===\n"))
 cat(sprintf("  Multiplier source years: %d–%d\n", mult_source_year_min, mult_source_year_max))
 cat(sprintf("  Multiplier analysis years: %d–%d\n", mult_year_min, mult_year_max))
-cat(sprintf("  Multiplier ages: %d–%d\n", mult_age_min, mult_age_max))
+cat(sprintf("  Multiplier ages after extension: %d–%d\n", mult_age_min, mult_age_max))
 cat(sprintf("  Requested analysis years: %d–%d\n", analysis_year_min, analysis_year_max))
 if (extend_baseline_constant && requested_year_max > baseline_year_max) {
   cat(sprintf("  Baseline mortality will be extended forward from %d to %d using the age-specific rates from %d.\n",
               baseline_year_max, requested_year_max, baseline_year_max))
 }
+if (cohort_terminal_age > age_max_source) {
+  cat(sprintf("  Baseline mortality age tail will be extended from %d to %d using the age-specific rates at age %d.\n",
+              age_max_source, cohort_terminal_age, age_max_source))
+}
 if (extend_multiplier_constant && requested_year_max > mult_source_year_max) {
   cat(sprintf("  Climate multipliers will be extended forward from %d to %d using the age-specific multipliers from %d.\n",
               mult_source_year_max, requested_year_max, mult_source_year_max))
+}
+if (cohort_terminal_age > mult_source_age_max) {
+  cat(sprintf("  Climate multiplier age tail will be extended from %d to %d using the multipliers at age %d.\n",
+              mult_source_age_max, cohort_terminal_age, mult_source_age_max))
 }
 cat(sprintf("  Cohort observation years: %d–%d\n", cohort_start_year, cohort_terminal_year))
 cat(sprintf("  Cohort observation ages: %d–%d\n", cohort_start_age, cohort_terminal_age))
@@ -318,39 +360,6 @@ We use **Eurostat mortality projections** (EUROPOP2023), which provide age-speci
 ## 2.1 Load Eurostat Mortality Projections
 
 ```{r load-baseline-mortality}
-extend_baseline_mortality_constant <- function(mort_proj, target_year_min, target_year_max) {
-  mort_proj <- copy(mort_proj)
-  source_year_min <- min(mort_proj$year)
-  source_year_max <- max(mort_proj$year)
-  out <- copy(mort_proj)
-
-  if (target_year_min < source_year_min) {
-    template_min <- mort_proj[year == source_year_min]
-    past_years <- target_year_min:(source_year_min - 1L)
-    past_ext <- rbindlist(lapply(past_years, function(y) {
-      tmp <- copy(template_min)
-      tmp[, year := y]
-      tmp
-    }))
-    out <- rbindlist(list(out, past_ext), use.names = TRUE)
-  }
-
-  if (target_year_max > source_year_max) {
-    template_max <- mort_proj[year == source_year_max]
-    future_years <- (source_year_max + 1L):target_year_max
-    future_ext <- rbindlist(lapply(future_years, function(y) {
-      tmp <- copy(template_max)
-      tmp[, year := y]
-      tmp
-    }))
-    out <- rbindlist(list(out, future_ext), use.names = TRUE)
-  }
-
-  out <- unique(out, by = c("age", "year"))
-  setorder(out, year, age)
-  out
-}
-
 if (file.exists(mort_proj_path)) {
   mort_proj <- fread(mort_proj_path)
 } else {
@@ -391,7 +400,7 @@ if (file.exists(mort_proj_path)) {
   )]
 
   mort_proj <- raw[
-    age_num >= age_min & age_num <= age_max,
+    age_num >= age_min & age_num <= age_max_source,
     .(
       age = age_num,
       year = as.integer(time),
@@ -400,7 +409,7 @@ if (file.exists(mort_proj_path)) {
   ]
 
   if (nrow(mort_proj) == 0L) {
-    stop("No mortality rows left after converting ages and filtering to ages ", age_min, "-", age_max, ".")
+    stop("No mortality rows left after converting ages and filtering to ages ", age_min, "-", age_max_source, ".")
   }
   if (anyNA(mort_proj$age) || anyNA(mort_proj$year) || anyNA(mort_proj$mx)) {
     stop("Missing values detected in converted mortality data.")
@@ -414,14 +423,22 @@ if (file.exists(mort_proj_path)) {
 }
 
 if (extend_baseline_constant) {
-  mort_proj <- extend_baseline_mortality_constant(
+  mort_proj <- extend_year_constant(
     mort_proj,
     target_year_min = requested_year_min,
     target_year_max = requested_year_max
   )
 }
 
-mort_proj <- mort_proj[age >= age_min & age <= age_max]
+if (cohort_terminal_age > age_max_source) {
+  mort_proj <- extend_age_constant(
+    mort_proj,
+    target_age_max = cohort_terminal_age,
+    source_age_max = age_max_source
+  )
+}
+
+mort_proj <- mort_proj[age >= age_min & age <= cohort_terminal_age]
 mort_proj <- mort_proj[year >= requested_year_min & year <= requested_year_max]
 
 if (nrow(mort_proj) == 0L) {
@@ -439,7 +456,7 @@ setkey(mort_proj, year, age)
 cat(sprintf("\n=== Baseline Mortality Data ===\n"))
 cat(sprintf("  Source: Eurostat %s | projection = %s | sex = %s\n",
             mortality_dataset_id, projection_code, sex_code))
-cat(sprintf("  Ages: %d–%d\n", min(mort_proj$age), max(mort_proj$age)))
+cat(sprintf("  Analysis ages: %d–%d\n", min(mort_proj$age), max(mort_proj$age)))
 cat(sprintf("  Analysis years: %d–%d\n", min(mort_proj$year), max(mort_proj$year)))
 cat(sprintf("  Records: %s\n", format(nrow(mort_proj), big.mark = ",")))
 
@@ -680,7 +697,7 @@ build_cohort_lifetable <- function(mort_data, birth_year, start_age, terminal_ag
   cohort_data[qx_base > 1, qx_base := 1]
   cohort_data[qx_climate > 1, qx_climate := 1]
 
-  # Open age interval at the terminal age (e.g. 100+)
+  # Close the final extended single-year interval consistently.
   cohort_data[n, qx_base := 1]
   cohort_data[n, qx_climate := 1]
 
@@ -708,8 +725,9 @@ build_cohort_lifetable <- function(mort_data, birth_year, start_age, terminal_ag
   cohort_data[, Lx_base := (lx_base + lx_next_base) / 2]
   cohort_data[, Lx_climate := (lx_climate + lx_next_climate) / 2]
 
-  cohort_data[n, Lx_base := ifelse(mx > 0, lx_base / mx, lx_base)]
-  cohort_data[n, Lx_climate := ifelse(mx_climate > 0, lx_climate / mx_climate, lx_climate)]
+  # Final age is a closed one-year interval, not an open age interval.
+  cohort_data[n, Lx_base := lx_base / 2]
+  cohort_data[n, Lx_climate := lx_climate / 2]
 
   cohort_data[, Tx_base := rev(cumsum(rev(Lx_base)))]
   cohort_data[, Tx_climate := rev(cumsum(rev(Lx_climate)))]
