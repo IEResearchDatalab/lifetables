@@ -1,6 +1,6 @@
 ---
 title: "Heat-Related Mortality and Lifespan Inequality"
-subtitle: "Climate Projection Analysis for European Cities"
+subtitle: "Part 2: Life Tables and Inequality Analysis"
 author: "Daniel Precioso"
 date: "`r Sys.Date()`"
 output:
@@ -23,704 +23,97 @@ output:
 
 # Overview
 
-This notebook estimates the impact of future temperature on mortality and lifespan inequality for a selected European city under a chosen climate scenario. The analysis integrates:
+This notebook (Part 2) constructs **cohort life tables** and analyzes **lifespan inequality** using mortality multipliers computed in Part 1.
 
-1. **Exposure-Response Functions (ERFs)** from Masselot et al., which quantify the relationship between temperature and mortality risk by age group
-2. **Climate projections** from multiple General Circulation Models (GCMs) under a selected Shared Socioeconomic Pathway (SSP)
-3. **Adaptation scenarios** that model potential reductions in heat vulnerability over time
+**Prerequisites**: You must run **Part 1** first to generate:
+- Mortality multipliers by age and year
+- Configuration file with city and scenario parameters
 
-The core output is age-specific **mortality multipliers** for each year (2015–2100) and age (20–100), which quantify changes in mortality risk relative to a historical baseline.
+**This notebook covers**:
+1. Loading baseline mortality projections (Eurostat EUROPOP2023)
+2. Applying climate multipliers to baseline mortality rates
+3. Constructing cohort life tables (baseline vs climate-adjusted)
+4. Computing life expectancy impacts
+5. Analyzing lifespan inequality metrics (Gini, SD, IQR)
+6. Threshold analysis to understand inequality mechanisms
+
+**Key concept**: Lifespan inequality measures how unequally distributed ages at death are. Climate change affects inequality through the **age pattern** of excess deaths, not just total mortality.
 
 ---
 
-# 1. Configuration
+# 1. Setup and Configuration
 
-We begin by selecting the analysis parameters:
+## 1.1 Load Required Libraries
 
-- **City**: The urban area of interest
-- **Scenario**: SSP pathway (1 = SSP1-2.6, 2 = SSP2-4.5, 3 = SSP3-7.0, 5 = SSP5-8.5)
-- **Adaptation level**: The fraction of heat-related excess risk eliminated by 2100 (0 = no adaptation, 1 = complete adaptation)
+```{r setup-libraries, message=FALSE, warning=FALSE}
+library(data.table)
+library(ggplot2)
+library(scales)
 
-```{r setup}
+cat("Libraries loaded successfully.\n")
+```
+
+---
+
+## 1.2 Load Configuration from Part 1
+
+```{r load-config}
+# Default configuration (modify if needed)
 city <- "Vienna"
 city_code <- "AT001C"
-scenario <- 2  # SSP2-4.5
-adaptation_level <- 0.5  # 50% risk reduction by 2100
+scenario <- 2
+adaptation_level <- 0.5  # 50% adaptation by 2100
 
-cat(sprintf("Analysis Configuration:\n"))
+
+cat("=== Configuration Loaded from Part 1 ===\n")
 cat(sprintf("  City: %s (%s)\n", city, city_code))
 cat(sprintf("  Scenario: SSP%d\n", scenario))
 cat(sprintf("  Adaptation by 2100: %.0f%%\n", adaptation_level * 100))
-cat(sprintf("  Years: 2015–2100 (all years)\n"))
 ```
 
 ---
 
-# 2. Data Loading
+## 1.3 Load Mortality Multipliers from Part 1
 
-## 2.1 Exposure-Response Functions (ERFs)
-
-We load city-specific coefficients from Masselot et al. that define the temperature-mortality relationship. These coefficients parameterize a distributed lag non-linear model (DLNM) with a B-spline basis.
-
-The ERF model is:
-
-$$
-\log RR(T) = \sum_{j=1}^{5} b_j \cdot s_j(T)
-$$
-
-where $s_j(T)$ are B-spline basis functions and $b_j$ are fitted coefficients.
-
-```{r load-coefficients, message=FALSE}
-source("../R/load_coefficients.R")
-
-coefs <- load_city_coefficients(city_code, coefs_path = "../data/coefs.csv")
-
-# Display city-specific coefficients by age group
-head(coefs$city)
-```
-
-**Interpretation**: Each row represents one age group with 5 spline coefficients (b1–b5) that define the shape of the temperature-mortality curve for that age.
-
----
-
-## 2.2 Single-Age Coefficient Interpolation
-
-The original ERF coefficients are grouped into broad age categories:
-
-- 20–44 years
-- 45–64 years
-- 65–74 years
-- 75–84 years
-- 85+ years
-
-For fine-grained life table analysis, we interpolate these to **single-year ages** (20–100).
-
-```{r interpolate-ages}
-agelabs       <- c("20-44", "45-64", "65-74", "75-84", "85+")
-age_midpoints <- c(32.5, 55, 70, 80, 92.5)
-age_range     <- 20:100
-
-coefs_single_age <- interpolate_coefs_to_single_age(
-  coefs$city, coefs$all,
-  agelabs, age_midpoints,
-  age_range = age_range,
-  city_code = city_code
-)
-
-head(coefs_single_age)
-```
-
-We now have ERF coefficients for **81 single-year ages** (20–100).
-
----
-
-## 2.3 Temperature Projections
-
-We load daily temperature projections from multiple GCMs for the selected city. The data covers:
-
-- **Historical period** (`ssp == "hist"`): Used for baseline mortality risk
-- **Future projections** (`ssp == scenario`): 2015–2100 under the selected SSP
-
-```{r load-temperature, message=FALSE, warning=FALSE}
-source("../R/load_data.R")
-
-parquet_path <- "../data/tmeanproj.gz.parquet"
-
-# Exclude problematic GCMs
-gcmexcl <- c("CMCC_CM2_SR5", "TaiESM1")
-
-temp_data <- load_projected_temperatures(
-  city_code,
-  parquet_path = parquet_path,
-  gcmexcl = gcmexcl
-)
-
-proj_data <- temp_data$proj_data
-gcm_cols  <- temp_data$gcm_cols
-
-cat(sprintf("\nLoaded %d days of temperature data from %d GCMs\n",
-            nrow(proj_data), length(gcm_cols)))
-cat(sprintf("SSP scenarios available: %s\n", paste(unique(proj_data$ssp), collapse = ", ")))
-
-head(proj_data)
-```
-
-**Data structure**: Each row is one day; columns `tas_*` contain daily mean temperature (°C) from different GCMs.
-
----
-
-# 3. Data Preparation
-
-## 3.1 Reshape Temperature Data
-
-We convert the wide-format GCM columns into a long format for the selected scenario:
-
-```{r reshape-temperature}
-library(data.table)
-setDT(proj_data)
-
-# Extract selected scenario only
-temp_long <- proj_data[ssp == scenario]
-
-temp_long <- melt(
-  temp_long,
-  id.vars = c("URAU_CODE", "date", "year", "doy", "ssp"),
-  measure.vars = gcm_cols,
-  variable.name = "gcm",
-  value.name = "temp"
-)
-
-cat(sprintf("Reshaped data: %d observations (days × GCMs)\n", nrow(temp_long)))
-cat(sprintf("Years: %d–%d\n", min(temp_long$year), max(temp_long$year)))
-cat(sprintf("Memory size: %.1f MB\n", object.size(temp_long) / 1024^2))
-
-head(temp_long)
-```
-
----
-
-## 3.2 Cross-Join with Age Groups
-
-To compute age-specific RR for each day, we create a full panel dataset by cross-joining:
-
-- **Days × GCMs** (temperature observations)
-- **Ages** (ERF coefficients)
-
-```{r cross-join-ages}
-setDT(coefs_single_age)
-
-# Extract coefficient columns
-age_coefs <- coefs_single_age[, .(agegroup, b1, b2, b3, b4, b5)]
-
-# Cartesian join
-temp_long[, key := 1]
-age_coefs[, key := 1]
-
-dt <- merge(temp_long, age_coefs, by = "key", allow.cartesian = TRUE)
-dt[, key := NULL]
-
-cat(sprintf("Full panel: %d observations (days × GCMs × ages)\n", nrow(dt)))
-cat(sprintf("Memory size: %.1f MB\n", object.size(dt) / 1024^2))
-
-head(dt)
-```
-
-**Warning**: This creates a large dataset (~50 million rows). We will aggregate to annual resolution after computing daily RR.
-
----
-
-# 4. Temperature-Mortality Model Construction
-
-## 4.1 Define B-Spline Basis
-
-We reconstruct the temperature basis function using the same specification as Masselot et al.:
-
-- **Basis**: B-spline (degree 2)
-- **Knots**: Placed at the 10th, 75th, and 90th percentiles of historical temperatures
-- **Boundary**: Full historical temperature range
-
-This ensures consistency with the original ERF estimation.
-
-```{r define-basis}
-library(dlnm)
-library(splines)
-
-varfun    <- "bs"
-vardegree <- 2
-varper    <- c(10, 75, 90)
-
-# Extract historical temperatures for basis calibration
-hist_temps <- unlist(
-  proj_data[ssp == "hist", ..gcm_cols],
-  use.names = FALSE
-)
-hist_temps <- hist_temps[!is.na(hist_temps)]
-
-# Define knots and boundaries
-varknots <- quantile(hist_temps, varper / 100, na.rm = TRUE)
-varbound <- range(hist_temps, na.rm = TRUE)
-
-cat(sprintf("Temperature basis:\n"))
-cat(sprintf("  Knots: %.1f°C, %.1f°C, %.1f°C\n", varknots[1], varknots[2], varknots[3]))
-cat(sprintf("  Boundary: [%.1f°C, %.1f°C]\n", varbound[1], varbound[2]))
-
-# Store basis arguments
-argvar <- list(
-  fun = varfun,
-  degree = vardegree,
-  knots = varknots,
-  Bound = varbound
-)
-```
-
----
-
-## 4.2 Compute Temperature Basis
-
-We evaluate the B-spline basis at each observed temperature:
-
-$$
-\mathbf{B}(T) = [s_1(T), s_2(T), s_3(T), s_4(T), s_5(T)]
-$$
-
-```{r compute-basis}
-basis <- do.call(onebasis, c(list(x = dt$temp), argvar))
-
-cat(sprintf("Basis matrix: %d observations × %d spline functions\n",
-            nrow(basis), ncol(basis)))
-```
-
----
-
-## 4.3 Compute Log-Relative Risk
-
-For each observation (day × age × GCM), we compute:
-
-$$
-\log RR = \sum_{j=1}^{5} b_j \cdot s_j(T) = \mathbf{B}(T) \cdot \mathbf{b}
-$$
-
-```{r compute-log-rr}
-coef_mat <- as.matrix(dt[, .(b1, b2, b3, b4, b5)])
-
-log_rr <- rowSums(basis * coef_mat)
-dt[, log_rr := log_rr]
-
-cat(sprintf("Computed log(RR) for %d observations\n", nrow(dt)))
-
-# Clean up large objects
-rm(basis, coef_mat, log_rr)
-gc()
-```
-
----
-
-## 4.4 Identify Minimum Mortality Temperature (MMT)
-
-The **Minimum Mortality Temperature** is the temperature at which mortality risk is lowest. We compute this separately for each age group by:
-
-1. Evaluating log(RR) across a fine temperature grid
-2. Finding the minimum within a plausible range (25th to 99th percentile)
-
-$$
-\text{MMT}_a = \arg\min_{T \in [T_{0.25}, T_{0.99}]} \log RR_a(T)
-$$
-
-```{r compute-mmt}
-temp_seq <- seq(varbound[1], varbound[2], by = 0.1)
-basis_seq <- do.call(onebasis, c(list(x = temp_seq), argvar))
-
-mmt_by_age <- dt[, {
-  # Get unique coefficients for this age
-  coefs <- unique(.SD[, .(b1, b2, b3, b4, b5)])
-  coefs_vec <- as.numeric(coefs[1, ])
-  
-  # Evaluate log(RR) across temperature sequence
-  log_rr_seq <- basis_seq %*% coefs_vec
-  
-  # Restrict to plausible range
-  ind <- temp_seq >= quantile(temp_seq, 0.25) &
-         temp_seq <= quantile(temp_seq, 0.99)
-  
-  # Find MMT
-  mmt <- temp_seq[ind][which.min(log_rr_seq[ind])]
-  
-  .(mmt = mmt)
-}, by = agegroup]
-
-# Merge back into main dataset
-dt <- merge(dt, mmt_by_age, by = "agegroup")
-
-cat("MMT by age (sample):\n")
-print(mmt_by_age[as.integer(agegroup) %% 10 == 0 | agegroup %in% c("20", "100")])
-```
-
-**Interpretation**: MMT typically increases with age—older adults have higher optimal temperatures, reflecting greater vulnerability to cold.
-
----
-
-## 4.5 Center at MMT and Compute Relative Risk
-
-To ensure RR = 1.0 at the MMT (no excess risk), we center the log-RR:
-
-$$
-\log RR_{\text{centered}} = \mathbf{B}(T) \cdot \mathbf{b} - \mathbf{B}(\text{MMT}) \cdot \mathbf{b}
-$$
-
-Then exponentiate and enforce RR ≥ 1:
-
-$$
-RR = \max(e^{\log RR_{\text{centered}}}, 1)
-$$
-
-```{r compute-rr}
-basis_at_temp <- do.call(onebasis, c(list(x = dt$temp), argvar))
-basis_at_mmt <- do.call(onebasis, c(list(x = dt$mmt), argvar))
-
-coef_mat <- as.matrix(dt[, .(b1, b2, b3, b4, b5)])
-
-log_rr_centered <- rowSums((basis_at_temp - basis_at_mmt) * coef_mat)
-
-dt[, RR := pmax(exp(log_rr_centered), 1)]
-
-cat(sprintf("Mean RR across all observations: %.3f\n", mean(dt$RR)))
-cat(sprintf("RR range: [%.3f, %.3f]\n", min(dt$RR), max(dt$RR)))
-
-# Clean up
-rm(basis_at_temp, basis_at_mmt, coef_mat, log_rr_centered)
-gc()
-```
-
----
-
-# 5. Adaptation Scenario
-
-We model **gradual adaptation** as a linear reduction in heat vulnerability from 2030 to 2100. The adaptation factor represents the fraction of excess risk that is eliminated:
-
-$$
-\text{Adaptation}(y) = \begin{cases}
-0 & \text{if } y < 2030 \\
-\alpha \cdot \frac{y - 2030}{2100 - 2030} & \text{if } 2030 \le y \le 2100 \\
-\alpha & \text{if } y > 2100
-\end{cases}
-$$
-
-where $\alpha$ is the `adaptation_level` (e.g., 0.5 = 50% reduction by 2100).
-
-The adapted RR is:
-
-$$
-RR_{\text{adapted}} = 1 + (RR - 1) \times (1 - \text{Adaptation})
-$$
-
-This preserves the baseline risk (RR = 1 at MMT) while reducing excess heat/cold mortality over time.
-
-```{r apply-adaptation}
-dt[, adapt_factor := fifelse(
-  year < 2030, 0,
-  fifelse(year > 2100, adaptation_level,
-          adaptation_level * (year - 2030) / (2100 - 2030))
-)]
-
-dt[, RR_adapted := 1 + (RR - 1) * (1 - adapt_factor)]
-
-cat(sprintf("Adaptation factor by year:\n"))
-cat(sprintf("  2020: %.2f (%.0f%% reduction)\n", 
-            unique(dt[year == 2020, adapt_factor]), 
-            unique(dt[year == 2020, adapt_factor]) * 100))
-cat(sprintf("  2050: %.2f (%.0f%% reduction)\n", 
-            unique(dt[year == 2050, adapt_factor]),
-            unique(dt[year == 2050, adapt_factor]) * 100))
-cat(sprintf("  2080: %.2f (%.0f%% reduction)\n", 
-            unique(dt[year == 2080, adapt_factor]),
-            unique(dt[year == 2080, adapt_factor]) * 100))
-cat(sprintf("  2100: %.2f (%.0f%% reduction)\n", 
-            unique(dt[year == 2100, adapt_factor]),
-            unique(dt[year == 2100, adapt_factor]) * 100))
-```
-
----
-
-# 6. Annual Aggregation
-
-To reduce dataset size and facilitate comparison with baseline, we aggregate daily RR to **annual means** by age and GCM:
-
-$$
-\overline{RR}_{a,y,g} = \frac{1}{365} \sum_{d=1}^{365} RR_{a,d,y,g}
-$$
-
-This represents the average mortality risk for each age, year, and climate model.
-
-```{r aggregate-annual}
-dt_annual <- dt[, .(
-  RR_mean = mean(RR_adapted, na.rm = TRUE)
-), by = .(year, agegroup, gcm)]
-
-cat(sprintf("Annual dataset: %d observations (years × ages × GCMs)\n", nrow(dt_annual)))
-cat(sprintf("Memory size: %.1f MB\n", object.size(dt_annual) / 1024^2))
-
-head(dt_annual, 20)
-
-# Clean up daily data to free memory
-rm(dt, basis_seq)
-gc()
-```
-
----
-
-# 7. Baseline Mortality Risk Computation
-
-To compute mortality multipliers, we need to compare future RR against a **historical baseline**. We now apply the same ERF model to historical temperatures.
-
-## 7.1 Extract Historical Temperature Data
-
-```{r baseline-temperature-data}
-baseline_period <- proj_data[ssp == "hist"]
-
-baseline_temps <- melt(
-  baseline_period,
-  id.vars = c("URAU_CODE", "date", "year", "doy"),
-  measure.vars = gcm_cols,
-  variable.name = "gcm",
-  value.name = "temp"
-)
-
-cat(sprintf("Baseline temperature data:\n"))
-cat(sprintf("  Period: %d–%d\n", min(baseline_temps$year), max(baseline_temps$year)))
-cat(sprintf("  Observations: %s (days × GCMs)\n", 
-            format(nrow(baseline_temps), big.mark = ",")))
-cat(sprintf("  Temperature range: %.1f°C to %.1f°C\n",
-            min(baseline_temps$temp, na.rm = TRUE),
-            max(baseline_temps$temp, na.rm = TRUE)))
-```
-
----
-
-## 7.2 Cross-Join Baseline with Age Groups
-
-```{r baseline-cross-join}
-baseline_temps[, key := 1]
-age_coefs[, key := 1]
-
-dt_baseline <- merge(baseline_temps, age_coefs, by = "key", allow.cartesian = TRUE)
-dt_baseline[, key := NULL]
-
-cat(sprintf("Baseline panel: %s observations\n", format(nrow(dt_baseline), big.mark = ",")))
-cat(sprintf("Memory size: %.1f MB\n", object.size(dt_baseline) / 1024^2))
-```
-
----
-
-## 7.3 Compute Baseline RR
-
-Apply the same ERF model to historical temperatures (no adaptation for baseline).
-
-```{r compute-baseline-rr}
-# Compute basis
-basis_baseline <- do.call(onebasis, c(list(x = dt_baseline$temp), argvar))
-coef_mat_baseline <- as.matrix(dt_baseline[, .(b1, b2, b3, b4, b5)])
-
-# Merge MMT
-dt_baseline <- merge(dt_baseline, mmt_by_age, by = "agegroup")
-
-# Compute centered RR
-basis_at_temp_bl <- do.call(onebasis, c(list(x = dt_baseline$temp), argvar))
-basis_at_mmt_bl <- do.call(onebasis, c(list(x = dt_baseline$mmt), argvar))
-
-log_rr_centered_bl <- rowSums((basis_at_temp_bl - basis_at_mmt_bl) * coef_mat_baseline)
-dt_baseline[, RR := pmax(exp(log_rr_centered_bl), 1)]
-
-cat(sprintf("Baseline RR computed for %s observations\n", 
-            format(nrow(dt_baseline), big.mark = ",")))
-cat(sprintf("Mean baseline RR: %.4f\n", mean(dt_baseline$RR)))
-
-# Clean up
-rm(basis_baseline, basis_at_temp_bl, basis_at_mmt_bl, coef_mat_baseline, log_rr_centered_bl)
-gc()
-```
-
----
-
-## 7.4 Aggregate Baseline to Annual Means
-
-```{r baseline-annual}
-rr_baseline <- dt_baseline[, .(
-  RR_baseline = mean(RR, na.rm = TRUE),
-  n_obs = .N
-), by = agegroup]
-
-cat(sprintf("\n=== Baseline RR Summary ===\n"))
-cat(sprintf("Ages: %s\n", length(unique(rr_baseline$agegroup))))
-cat(sprintf("Mean RR across all ages: %.4f\n", mean(rr_baseline$RR_baseline)))
-
-# Sample output
-print(rr_baseline[as.integer(agegroup) %% 10 == 0 | agegroup %in% c("20", "100")])
-
-# Clean up baseline daily data
-rm(dt_baseline, baseline_temps)
-gc()
-```
-
-**Interpretation**: These values represent the average temperature-related mortality risk during the historical climate. Values close to 1 indicate low baseline risk.
-
----
-
-# 8. Mortality Multipliers
-
-Now we compute the **mortality multiplier** by comparing future annual RR to baseline RR:
-
-$$
-M_{a,y,g} = \frac{\overline{RR}_{a,y,g,\text{future}}}{\overline{RR}_{a,\text{baseline}}}
-$$
-
-## 8.1 Merge Future and Baseline RR
-
-```{r merge-future-baseline}
-# Merge baseline into future annual data
-dt_annual_mult <- merge(
-  dt_annual,
-  rr_baseline,
-  by = "agegroup",
-  all.x = TRUE
-)
-
-cat(sprintf("Merged dataset: %s observations\n", format(nrow(dt_annual_mult), big.mark = ",")))
-```
-
----
-
-## 8.2 Compute Multipliers
-
-```{r compute-multipliers}
-# Compute multiplier for each year × age × GCM
-dt_annual_mult[, multiplier := RR_mean / RR_baseline]
-
-cat(sprintf("Multipliers computed for %s observations\n", 
-            format(nrow(dt_annual_mult), big.mark = ",")))
-cat(sprintf("Multiplier range: %.3f to %.3f\n", 
-            min(dt_annual_mult$multiplier), max(dt_annual_mult$multiplier)))
-
-head(dt_annual_mult[, .(year, agegroup, gcm, RR_mean, RR_baseline, multiplier)], 20)
-```
-
----
-
-## 8.3 Aggregate Across GCMs (Ensemble Statistics)
-
-```{r ensemble-multipliers}
-multipliers <- dt_annual_mult[, .(
-  multiplier_mean = mean(multiplier, na.rm = TRUE),
-  multiplier_sd   = sd(multiplier, na.rm = TRUE),
-  multiplier_q05  = quantile(multiplier, 0.05, na.rm = TRUE),
-  multiplier_q50  = quantile(multiplier, 0.50, na.rm = TRUE),
-  multiplier_q95  = quantile(multiplier, 0.95, na.rm = TRUE),
-  n_gcms          = .N
-), by = .(year, agegroup)]
-
-# Convert age to integer for easier analysis
-multipliers[, age := as.integer(agegroup)]
-setorder(multipliers, year, age)
-
-cat(sprintf("\n=== Ensemble Multipliers ===\n"))
-cat(sprintf("Years: %d–%d\n", min(multipliers$year), max(multipliers$year)))
-cat(sprintf("Ages: %d–%d\n", min(multipliers$age), max(multipliers$age)))
-cat(sprintf("Total records: %s\n", format(nrow(multipliers), big.mark = ",")))
-
-head(multipliers, 20)
-```
-
-**Interpretation**:
-- `multiplier_mean > 1`: Increased mortality risk compared to baseline
-- `multiplier_mean < 1`: Decreased risk (e.g., milder winters)
-- `multiplier_q05` to `multiplier_q95`: 90% uncertainty range across GCMs
-
----
-
-## 8.4 Summary Statistics by Decade
-
-```{r multiplier-summary}
-# Compute decadal averages
-multipliers[, decade := floor(year / 10) * 10]
-
-decade_summary <- multipliers[, .(
-  mean_multiplier = round(mean(multiplier_mean), 4),
-  min_multiplier  = round(min(multiplier_mean), 4),
-  max_multiplier  = round(max(multiplier_mean), 4),
-  mult_age_30     = round(multiplier_mean[age == 30][1], 4),
-  mult_age_65     = round(multiplier_mean[age == 65][1], 4),
-  mult_age_85     = round(multiplier_mean[age == 85][1], 4)
-), by = decade]
-
-cat("\n=== Mortality Multipliers by Decade ===\n")
-print(decade_summary)
-```
-
----
-
-## 8.5 Visualization: Multipliers Over Time and Age
-
-```{r plot-multipliers-heatmap, fig.width=10, fig.height=6}
-library(ggplot2)
-
-ggplot(multipliers[year %% 5 == 0], aes(x = age, y = factor(year), fill = multiplier_mean)) +
-  geom_tile() +
-  scale_fill_gradient2(
-    low = "#2166ac", mid = "white", high = "#b2182b",
-    midpoint = 1,
-    name = "Multiplier",
-    limits = c(min(multipliers$multiplier_mean), max(multipliers$multiplier_mean))
-  ) +
-  labs(
-    title = sprintf("Mortality Multipliers — %s (SSP%d)", city, scenario),
-    subtitle = sprintf("Adaptation: %.0f%% by 2100", adaptation_level * 100),
-    x = "Age",
-    y = "Year",
-    caption = "Relative to historical baseline (1991–2020)"
-  ) +
-  theme_minimal(base_size = 12) +
-  theme(legend.position = "right")
-```
-
----
-
-## 8.6 Visualization: Time Series for Key Ages
-
-```{r plot-multipliers-timeseries, fig.width=10, fig.height=6}
-key_ages <- c(30, 50, 70, 90)
-
-ggplot(multipliers[age %in% key_ages], 
-       aes(x = year, y = multiplier_mean, color = factor(age))) +
-  geom_line(linewidth = 1) +
-  geom_ribbon(aes(ymin = multiplier_q05, ymax = multiplier_q95, fill = factor(age)),
-              alpha = 0.2, color = NA) +
-  geom_hline(yintercept = 1, linetype = "dashed", color = "gray30") +
-  scale_color_viridis_d(name = "Age") +
-  scale_fill_viridis_d(name = "Age") +
-  labs(
-    title = sprintf("Mortality Multipliers Over Time — %s (SSP%d)", city, scenario),
-    subtitle = "Shaded regions: 5th–95th percentile across GCMs",
-    x = "Year",
-    y = "Mortality Multiplier (relative to baseline)",
-    caption = sprintf("Adaptation: %.0f%% by 2100", adaptation_level * 100)
-  ) +
-  theme_minimal(base_size = 12) +
-  theme(legend.position = "bottom")
-```
-
----
-
-## 8.7 Export Multipliers
-
-```{r export-multipliers}
-# Create output directory if needed
-if (!dir.exists("results")) dir.create("results", recursive = TRUE)
-
-# Save full multipliers table
+```{r load-multipliers}
+# Construct multipliers file path
 mult_path <- sprintf("results/mortality_multipliers_%s_ssp%d.csv",
                      tolower(gsub(" ", "_", city)),
                      scenario)
 
-fwrite(multipliers, mult_path)
-cat(sprintf("\nSaved: %s\n", mult_path))
+# Load multipliers
+multipliers <- fread(mult_path)
 
-# Save decade summary
-decade_path <- sprintf("results/multipliers_decade_summary_%s_ssp%d.csv",
-                       tolower(gsub(" ", "_", city)),
-                       scenario)
+cat(sprintf("\n=== Mortality Multipliers Loaded ===\n"))
+cat(sprintf("  File: %s\n", mult_path))
+cat(sprintf("  Records: %s\n", format(nrow(multipliers), big.mark = ",")))
+cat(sprintf("  Years: %d–%d\n", min(multipliers$year), max(multipliers$year)))
+cat(sprintf("  Ages: %d–%d\n", min(multipliers$age), max(multipliers$age)))
+cat(sprintf("  Mean multiplier: %.4f\n", mean(multipliers$multiplier_mean)))
+cat(sprintf("  Multiplier range: [%.3f, %.3f]\n", 
+            min(multipliers$multiplier_mean), max(multipliers$multiplier_mean)))
 
-fwrite(decade_summary, decade_path)
-cat(sprintf("Saved: %s\n", decade_path))
+head(multipliers, 10)
 ```
+
+**Data structure**:
+- `year`: Calendar year (2015–2100)
+- `age`: Single-year age (20–100)
+- `multiplier_mean`: Ensemble mean across GCMs
+- `multiplier_sd`: Standard deviation across GCMs
+- `multiplier_q05`, `multiplier_q50`, `multiplier_q95`: Quantiles for uncertainty
+
+**Interpretation**: `multiplier > 1` indicates increased mortality risk compared to historical baseline.
 
 ---
 
-# 9. Baseline Mortality Data
+# 2. Baseline Mortality Data
 
-To construct life tables, we need **baseline mortality rates** by age and year. These represent the expected mortality in the absence of climate change impacts.
+To construct life tables, we need **baseline mortality rates** by age and year. These represent expected mortality in the absence of climate change impacts.
 
 We use **Eurostat mortality projections** (EUROPOP2023), which provide age-specific death rates for European countries through 2100.
 
-## 9.1 Load Eurostat Mortality Projections
+## 2.1 Load Eurostat Mortality Projections
 
 ```{r load-baseline-mortality}
 # Eurostat mortality projections for Austria
@@ -763,7 +156,7 @@ if (!file.exists(mort_proj_path)) {
 # Ensure proper ordering
 setkey(mort_proj, year, age)
 
-cat(sprintf("Baseline mortality data:\n"))
+cat(sprintf("\n=== Baseline Mortality Data ===\n"))
 cat(sprintf("  Ages: %d–%d\n", min(mort_proj$age), max(mort_proj$age)))
 cat(sprintf("  Years: %d–%d\n", min(mort_proj$year), max(mort_proj$year)))
 cat(sprintf("  Records: %s\n", format(nrow(mort_proj), big.mark = ",")))
@@ -780,7 +173,7 @@ head(mort_proj, 10)
 
 ---
 
-## 9.2 Baseline Mortality Summary
+## 2.2 Baseline Mortality Summary
 
 ```{r baseline-mort-summary}
 # Sample mortality rates for selected ages and years
@@ -794,8 +187,6 @@ cat("\n=== Baseline Mortality Rates (mx) ===\n")
 print(mort_wide)
 
 # Visualize baseline mortality by age (for selected years)
-library(ggplot2)
-
 ggplot(mort_proj[year %in% sample_years], aes(x = age, y = mx, color = factor(year))) +
   geom_line(linewidth = 1) +
   scale_y_log10(labels = scales::label_comma()) +
@@ -812,12 +203,12 @@ ggplot(mort_proj[year %in% sample_years], aes(x = age, y = mx, color = factor(ye
 
 ---
 
-# 10. Apply Climate Multipliers to Baseline Mortality
+# 3. Apply Climate Multipliers to Baseline Mortality
 
 We now combine:
 
 1. **Baseline mortality**: `mx_base[age, year]` from Eurostat
-2. **Climate multipliers**: `M[age, year]` from our temperature-mortality model
+2. **Climate multipliers**: `M[age, year]` from Part 1
 
 To obtain **climate-adjusted mortality**:
 
@@ -829,7 +220,7 @@ where $M(a, y) > 1$ indicates increased mortality due to climate change.
 
 ---
 
-## 10.1 Merge Multipliers with Baseline Mortality
+## 3.1 Merge Multipliers with Baseline Mortality
 
 ```{r merge-multipliers}
 # Use ensemble mean multiplier (already averaged across GCMs)
@@ -849,17 +240,20 @@ mort_climate[is.na(multiplier), multiplier := 1.0]
 # Compute climate-adjusted mortality
 mort_climate[, mx_climate := mx * multiplier]
 
-cat(sprintf("Climate-adjusted mortality computed for %s records\n",
-            format(nrow(mort_climate), big.mark = ",")))
+cat(sprintf("\n=== Climate-Adjusted Mortality Computed ===\n"))
+cat(sprintf("  Records: %s\n", format(nrow(mort_climate), big.mark = ",")))
+cat(sprintf("  Mean multiplier: %.4f\n", mean(mort_climate$multiplier, na.rm = TRUE)))
+cat(sprintf("  Mean baseline mx: %.6f\n", mean(mort_climate$mx)))
+cat(sprintf("  Mean climate mx: %.6f\n", mean(mort_climate$mx_climate)))
 
 head(mort_climate, 15)
 ```
 
 ---
 
-## 10.2 Comparison: Baseline vs Climate Mortality
+## 3.2 Comparison: Baseline vs Climate Mortality
 
-We now examine the **relative impact** of climate change on mortality by computing the percentage change at each age and year.
+We examine the **relative impact** of climate change on mortality by computing percentage change.
 
 **Formula:** 
 $$
@@ -869,7 +263,6 @@ $$
 **Interpretation:**
 - Positive values: Climate **increases** mortality risk (worse outcomes)
 - Negative values: Climate **decreases** mortality risk (e.g., reduced cold-related deaths)
-- Magnitude indicates the **relative impact** - a 5% increase at age 30 has different absolute consequences than 5% at age 90
 
 ```{r compare-mortality}
 # Compute percentage change
@@ -908,7 +301,7 @@ ggplot(mort_climate[year %in% c(2050, 2070, 2099)],
                        adaptation_level * 100),
     x = "Age",
     y = "Change in Mortality Rate (%)",
-    caption = "Positive values indicate increased mortality risk; negative values indicate decreased risk"
+    caption = "Positive values: increased mortality | Negative values: decreased mortality"
   ) +
   theme_minimal(base_size = 12) +
   theme(
@@ -920,7 +313,7 @@ ggplot(mort_climate[year %in% c(2050, 2070, 2099)],
 
 ---
 
-# 11. Cohort Life Table Construction
+# 4. Cohort Life Table Construction
 
 A **cohort life table** tracks a hypothetical birth cohort through time, applying age-specific mortality rates for each calendar year they live through.
 
@@ -933,14 +326,14 @@ This differs from a **period life table**, which uses mortality rates from a sin
 
 ---
 
-## 11.1 Define Cohort Parameters
+## 4.1 Define Cohort Parameters
 
 ```{r cohort-setup}
 cohort_birth_year <- 2020  # Birth year of cohort
 cohort_start_age  <- 20    # Start tracking at age 20 (year 2040)
 radix             <- 100000  # Initial cohort size (lx at start age)
 
-cat(sprintf("Cohort Parameters:\n"))
+cat(sprintf("\n=== Cohort Parameters ===\n"))
 cat(sprintf("  Birth year: %d\n", cohort_birth_year))
 cat(sprintf("  Start tracking at age %d (year %d)\n", 
             cohort_start_age, cohort_birth_year + cohort_start_age))
@@ -949,7 +342,7 @@ cat(sprintf("  Initial cohort size (radix): %s\n", format(radix, big.mark = ",")
 
 ---
 
-## 11.2 Build Cohort Life Table Function
+## 4.2 Build Cohort Life Table Function
 
 ```{r lifetable-function}
 build_cohort_lifetable <- function(mort_data, birth_year, start_age, radix = 100000) {
@@ -971,7 +364,6 @@ build_cohort_lifetable <- function(mort_data, birth_year, start_age, radix = 100
   
   # Convert central death rate (mx) to probability of death (qx)
   # Standard approximation: qx ≈ mx / (1 + 0.5 * mx)
-  # For small mx, qx ≈ 1 - exp(-mx) is also valid
   cohort_data[, qx_base := mx / (1 + 0.5 * mx)]
   cohort_data[, qx_climate := mx_climate / (1 + 0.5 * mx_climate)]
   
@@ -1025,7 +417,7 @@ build_cohort_lifetable <- function(mort_data, birth_year, start_age, radix = 100
 
 ---
 
-## 11.3 Construct Baseline and Climate Life Tables
+## 4.3 Construct Baseline and Climate Life Tables
 
 ```{r build-lifetable}
 lifetable <- build_cohort_lifetable(
@@ -1035,7 +427,7 @@ lifetable <- build_cohort_lifetable(
   radix = radix
 )
 
-cat(sprintf("Cohort life table constructed:\n"))
+cat(sprintf("\n=== Cohort Life Table Constructed ===\n"))
 cat(sprintf("  Ages: %d–%d\n", min(lifetable$age), max(lifetable$age)))
 cat(sprintf("  Years: %d–%d\n", min(lifetable$year), max(lifetable$year)))
 
@@ -1062,48 +454,36 @@ print(tail(lifetable_display, 10))
 
 ---
 
-# 12. Life Expectancy Analysis
+# 5. Life Expectancy Analysis
 
-## 12.1 Life Expectancy at Age 20
+## 5.1 Life Expectancy at Starting Age
 
-```{r life-expectancy-20}
-e20_base <- lifetable[age == cohort_start_age, ex_base]
-e20_climate <- lifetable[age == cohort_start_age, ex_climate]
+```{r life-expectancy-start}
+e_start_base <- lifetable[age == cohort_start_age, ex_base]
+e_start_climate <- lifetable[age == cohort_start_age, ex_climate]
 
-delta_e20 <- e20_climate - e20_base
-pct_delta_e20 <- (delta_e20 / e20_base) * 100
+delta_e <- e_start_climate - e_start_base
+pct_delta_e <- (delta_e / e_start_base) * 100
 
 cat(sprintf("\n=== Life Expectancy at Age %d ===\n", cohort_start_age))
-cat(sprintf("  Baseline (no climate impact):   %.2f years\n", e20_base))
-cat(sprintf("  Climate-adjusted (SSP%d):        %.2f years\n", scenario, e20_climate))
+cat(sprintf("  Baseline (no climate impact):   %.2f years\n", e_start_base))
+cat(sprintf("  Climate-adjusted (SSP%d):        %.2f years\n", scenario, e_start_climate))
 cat(sprintf("  Difference:                     %.2f years (%.2f%%)\n", 
-            delta_e20, pct_delta_e20))
+            delta_e, pct_delta_e))
 
-if (delta_e20 < 0) {
+if (delta_e < 0) {
   cat(sprintf("\n  → Climate change reduces life expectancy by %.1f months\n", 
-              abs(delta_e20) * 12))
+              abs(delta_e) * 12))
 } else {
   cat(sprintf("\n  → Climate change increases life expectancy by %.1f months\n", 
-              delta_e20 * 12))
+              delta_e * 12))
   cat("     (Note: This may occur if cold-related mortality reduction exceeds heat increase)\n")
 }
 ```
 
 ---
 
-## 12.2 Life Expectancy Difference by Age
-
-We visualize the difference in remaining life expectancy at each age.
-
-**Formula:**
-$$
-\Delta e_x = e_{x,\text{climate}} - e_{x,\text{baseline}}
-$$
-
-**Interpretation:**
-- Positive values ($\Delta e_x > 0$): Climate **increases** remaining LE (e.g., reduced cold mortality)
-- Negative values ($\Delta e_x < 0$): Climate **decreases** remaining LE (increased heat mortality)
-- Magnitude represents years of expected life gained/lost due to climate change
+## 5.2 Life Expectancy Difference by Age
 
 ```{r life-expectancy-by-age}
 # Compute difference in life expectancy
@@ -1137,7 +517,7 @@ ggplot(lifetable, aes(x = age, y = delta_ex)) +
 
 ---
 
-## 12.3 Survivorship Curves
+## 5.3 Survivorship Curves
 
 ```{r survivorship-curves}
 surv_data <- lifetable[, .(
@@ -1172,7 +552,7 @@ ggplot(surv_long, aes(x = age, y = lx / radix, color = Scenario)) +
 
 ---
 
-## 12.4 Cumulative Deaths
+## 5.4 Cumulative Deaths
 
 ```{r cumulative-deaths}
 # Calculate cumulative deaths by age
@@ -1209,9 +589,12 @@ ggplot(lifetable, aes(x = age, y = excess_deaths)) +
 
 ---
 
-# 13. Export Life Table Results
+# 6. Export Life Table Results
 
 ```{r export-lifetable}
+# Create output directory if needed
+if (!dir.exists("results")) dir.create("results", recursive = TRUE)
+
 # Save full life table
 output_path <- sprintf("results/lifetable_%s_ssp%d_cohort%d.csv",
                        tolower(gsub(" ", "_", city)),
@@ -1220,7 +603,7 @@ output_path <- sprintf("results/lifetable_%s_ssp%d_cohort%d.csv",
 
 lifetable_export <- lifetable[, .(
   age, year,
-  mx, mx_climate, multiplier,  # ← Changed mx_base to mx
+  mx, mx_climate, multiplier,
   qx_base, qx_climate,
   lx_base, lx_climate,
   dx_base, dx_climate,
@@ -1228,7 +611,7 @@ lifetable_export <- lifetable[, .(
 )]
 
 fwrite(lifetable_export, output_path)
-cat(sprintf("\nSaved: %s\n", output_path))
+cat(sprintf("\nSaved life table: %s\n", output_path))
 
 # Save summary statistics
 summary_stats <- data.table(
@@ -1238,26 +621,27 @@ summary_stats <- data.table(
   cohort_birth_year = cohort_birth_year,
   start_age = cohort_start_age,
   radix = radix,
-  e20_baseline = e20_base,
-  e20_climate = e20_climate,
-  delta_e20_years = delta_e20,
-  delta_e20_months = delta_e20 * 12,
-  pct_change_e20 = pct_delta_e20,
+  e_start_baseline = e_start_base,
+  e_start_climate = e_start_climate,
+  delta_e_years = delta_e,
+  delta_e_months = delta_e * 12,
+  pct_change_e = pct_delta_e,
   total_excess_deaths = total_excess,
   pct_excess_deaths = pct_excess
 )
 
-summary_path <- sprintf("results/lifetable_summary_%s_ssp%d.csv",
+summary_path <- sprintf("results/lifetable_summary_%s_ssp%d_cohort%d.csv",
                         tolower(gsub(" ", "_", city)),
-                        scenario)
+                        scenario,
+                        cohort_birth_year)
 
 fwrite(summary_stats, summary_path)
-cat(sprintf("Saved: %s\n", summary_path))
+cat(sprintf("Saved life table summary: %s\n", summary_path))
 ```
 
 ---
 
-# 14. Lifespan Inequality Analysis
+# 7. Lifespan Inequality Analysis
 
 Lifespan inequality (LI) measures the **dispersion** or **spread** of ages at death within a population. Unlike life expectancy (which is a mean), LI captures how equally or unequally distributed lifespans are.
 
@@ -1269,7 +653,7 @@ Climate change affects LI through the **age pattern** of excess deaths, not just
 
 ---
 
-## 14.1 Age-at-Death Distribution
+## 7.1 Age-at-Death Distribution
 
 The life table column `dx` represents the **distribution of deaths by age**. From this, we can compute various inequality metrics.
 
@@ -1290,21 +674,13 @@ cat(sprintf("Total excess deaths: %s\n", format(round(sum(deaths_climate$dx) - s
 
 ---
 
-## 14.2 Lifespan Inequality Metrics
+## 7.2 Lifespan Inequality Metrics
 
-### 14.2.1 Gini Coefficient
+### 7.2.1 Gini Coefficient
 
 The **Gini coefficient** measures inequality on a 0-1 scale:
 - **0**: Perfect equality (everyone dies at the same age)
 - **1**: Maximum inequality (all deaths at extremes)
-
-For ages at death, Gini is computed as:
-
-$$
-G = \frac{\sum_{i=1}^{n} \sum_{j=1}^{n} |x_i - x_j| \cdot w_i \cdot w_j}{2 \cdot \bar{x} \cdot \sum_{i=1}^{n} w_i^2}
-$$
-
-where $x_i$ = age, $w_i$ = deaths at that age.
 
 ```{r compute-gini}
 # Gini coefficient function
@@ -1357,15 +733,9 @@ if (delta_gini > 0) {
 
 ---
 
-### 14.2.2 Standard Deviation of Age at Death
+### 7.2.2 Standard Deviation of Age at Death
 
-The **standard deviation** (SD) measures dispersion in years:
-
-$$
-\text{SD} = \sqrt{\frac{\sum (x_i - \bar{x})^2 \cdot d_i}{\sum d_i}}
-$$
-
-where $$x_i$$ = age, $$d_i$$ = deaths, $$\bar{x}$$ = mean age at death.
+The **standard deviation** (SD) measures dispersion in years.
 
 ```{r compute-sd}
 # Standard deviation function
@@ -1394,15 +764,9 @@ cat(sprintf("Change:           %.2f years (%.2f%%)\n", delta_sd, pct_change_sd))
 
 ---
 
-### 14.2.3 Interquartile Range (IQR)
+### 7.2.3 Interquartile Range (IQR)
 
-The **IQR** is the difference between the 75th and 25th percentile of age at death:
-
-$$
-\text{IQR} = Q_{75} - Q_{25}
-$$
-
-This measures the spread of the "middle 50%" of deaths.
+The **IQR** is the difference between the 75th and 25th percentile of age at death.
 
 ```{r compute-iqr}
 # IQR function
@@ -1445,31 +809,27 @@ cat(sprintf("\nChange in IQR: %.2f years\n", delta_iqr))
 
 ---
 
-## 14.3 Threshold Analysis
+## 7.3 Threshold Analysis
 
 A critical insight from demography: there is a **threshold age** that determines whether additional deaths increase or decrease lifespan inequality.
 
 **Rule of thumb**: The threshold is approximately where **remaining life expectancy** equals the population's **life expectancy at the starting age**.
 
-$$
-\text{Threshold} \approx \text{age where } e_x \approx e_{20}
-$$
-
 - **Deaths below threshold**: Increase LI (premature deaths)
 - **Deaths above threshold**: Decrease LI (late deaths compress distribution)
 
-### 14.3.1 Identify Threshold Age
+### 7.3.1 Identify Threshold Age
 
 ```{r identify-threshold}
 # Threshold: age where remaining LE ≈ LE at starting age
-e20_base_val <- lifetable[age == cohort_start_age, ex_base]
+e_start_val <- lifetable[age == cohort_start_age, ex_base]
 
 # Find age closest to this remaining LE
-lifetable[, diff_from_e20 := abs(ex_base - e20_base_val)]
-threshold_age <- lifetable[which.min(diff_from_e20), age]
+lifetable[, diff_from_e_start := abs(ex_base - e_start_val)]
+threshold_age <- lifetable[which.min(diff_from_e_start), age]
 
 cat(sprintf("\n=== Threshold Age Analysis ===\n"))
-cat(sprintf("Life expectancy at age %d: %.2f years\n", cohort_start_age, e20_base_val))
+cat(sprintf("Life expectancy at age %d: %.2f years\n", cohort_start_age, e_start_val))
 cat(sprintf("Threshold age: %d years\n", threshold_age))
 cat(sprintf("Remaining LE at threshold: %.2f years\n", 
             lifetable[age == threshold_age, ex_base]))
@@ -1477,18 +837,18 @@ cat(sprintf("Remaining LE at threshold: %.2f years\n",
 
 ---
 
-### 14.3.2 Classify Excess Deaths by Threshold
+### 7.3.2 Classify Excess Deaths by Threshold
 
 ```{r classify-excess-deaths}
 # Add threshold classification to life table
 lifetable[, below_threshold := age < threshold_age]
-lifetable[, excess_deaths := dx_climate - dx_base]
+lifetable[, excess_deaths_age := dx_climate - dx_base]
 
 # Summarize excess deaths by position relative to threshold
 excess_summary <- lifetable[, .(
-  total_excess = sum(excess_deaths),
-  excess_below = sum(excess_deaths[below_threshold == TRUE]),
-  excess_above = sum(excess_deaths[below_threshold == FALSE])
+  total_excess = sum(excess_deaths_age),
+  excess_below = sum(excess_deaths_age[below_threshold == TRUE]),
+  excess_above = sum(excess_deaths_age[below_threshold == FALSE])
 )]
 
 pct_below <- (excess_summary$excess_below / excess_summary$total_excess) * 100
@@ -1518,9 +878,9 @@ if (excess_summary$excess_below > abs(excess_summary$excess_above)) {
 
 ---
 
-## 14.4 Visualizations
+## 7.4 Visualizations
 
-### 14.4.1 Age-at-Death Distribution Comparison
+### 7.4.1 Age-at-Death Distribution Comparison
 
 ```{r plot-age-at-death, fig.width=10, fig.height=6}
 # Combine distributions for plotting
@@ -1558,11 +918,11 @@ ggplot(dist_combined, aes(x = age, y = prop, fill = scenario)) +
 
 ---
 
-### 14.4.2 Excess Deaths by Age
+### 7.4.2 Excess Deaths by Age
 
 ```{r plot-excess-deaths-by-age, fig.width=10, fig.height=6}
 # Highlight threshold region
-ggplot(lifetable, aes(x = age, y = excess_deaths)) +
+ggplot(lifetable, aes(x = age, y = excess_deaths_age)) +
   geom_rect(aes(xmin = -Inf, xmax = threshold_age, ymin = -Inf, ymax = Inf),
             fill = "#fee5d9", alpha = 0.3) +
   geom_rect(aes(xmin = threshold_age, xmax = Inf, ymin = -Inf, ymax = Inf),
@@ -1571,9 +931,9 @@ ggplot(lifetable, aes(x = age, y = excess_deaths)) +
   geom_line(color = "#d62728", linewidth = 1) +
   geom_vline(xintercept = threshold_age, linetype = "dashed", 
              color = "black", linewidth = 1) +
-  annotate("text", x = threshold_age - 5, y = max(lifetable$excess_deaths) * 0.8,
+  annotate("text", x = threshold_age - 5, y = max(lifetable$excess_deaths_age) * 0.8,
            label = "Below threshold\n(increases LI)", hjust = 1, size = 3) +
-  annotate("text", x = threshold_age + 5, y = max(lifetable$excess_deaths) * 0.8,
+  annotate("text", x = threshold_age + 5, y = max(lifetable$excess_deaths_age) * 0.8,
            label = "Above threshold\n(decreases LI)", hjust = 0, size = 3) +
   scale_y_continuous(labels = scales::comma_format()) +
   labs(
@@ -1592,7 +952,7 @@ ggplot(lifetable, aes(x = age, y = excess_deaths)) +
 
 ---
 
-### 14.4.3 Lifespan Inequality Metrics Summary
+### 7.4.3 Lifespan Inequality Metrics Summary
 
 ```{r plot-li-metrics, fig.width=8, fig.height=6}
 # Create summary data frame
@@ -1603,9 +963,6 @@ li_metrics <- data.table(
             sd_base, sd_climate,
             iqr_base$iqr, iqr_climate$iqr)
 )
-
-# Normalize for visualization (within each metric)
-li_metrics[, Value_norm := Value / Value[1], by = Metric]
 
 ggplot(li_metrics, aes(x = Scenario, y = Value, fill = Scenario)) +
   geom_col(alpha = 0.8) +
@@ -1629,17 +986,17 @@ ggplot(li_metrics, aes(x = Scenario, y = Value, fill = Scenario)) +
 
 ---
 
-## 14.5 Summary Table
+## 7.5 Summary Table
 
 ```{r li-summary-table}
 # Create comprehensive summary
 li_summary <- data.table(
-  Metric = c("Life Expectancy at 20", "Gini Coefficient", 
+  Metric = c("Life Expectancy at Start", "Gini Coefficient", 
              "SD of Age at Death", "IQR of Age at Death",
              "Threshold Age", "Excess Deaths Below Threshold",
              "Excess Deaths Above Threshold"),
   Baseline = c(
-    sprintf("%.2f years", e20_base),
+    sprintf("%.2f years", e_start_base),
     sprintf("%.4f", gini_base),
     sprintf("%.2f years", sd_base),
     sprintf("%.1f years", iqr_base$iqr),
@@ -1648,7 +1005,7 @@ li_summary <- data.table(
     "—"
   ),
   Climate = c(
-    sprintf("%.2f years", e20_climate),
+    sprintf("%.2f years", e_start_climate),
     sprintf("%.4f", gini_climate),
     sprintf("%.2f years", sd_climate),
     sprintf("%.1f years", iqr_climate$iqr),
@@ -1657,7 +1014,7 @@ li_summary <- data.table(
     sprintf("%.0f (%.1f%%)", excess_summary$excess_above, pct_above)
   ),
   Change = c(
-    sprintf("%.2f years (%.2f%%)", delta_e20, pct_delta_e20),
+    sprintf("%.2f years (%.2f%%)", delta_e, pct_delta_e),
     sprintf("%.4f (%.2f%%)", delta_gini, pct_change_gini),
     sprintf("%.2f years (%.2f%%)", delta_sd, pct_change_sd),
     sprintf("%.1f years", delta_iqr),
@@ -1673,7 +1030,7 @@ print(li_summary)
 
 ---
 
-## 14.6 Export Lifespan Inequality Results
+# 8. Export Lifespan Inequality Results
 
 ```{r export-li-results}
 # Create output directory if needed
@@ -1686,10 +1043,10 @@ li_results <- data.table(
   adaptation = adaptation_level,
   cohort_birth_year = cohort_birth_year,
   # Life expectancy
-  e20_baseline = e20_base,
-  e20_climate = e20_climate,
-  delta_e20 = delta_e20,
-  pct_change_e20 = pct_delta_e20,
+  e_start_baseline = e_start_base,
+  e_start_climate = e_start_climate,
+  delta_e = delta_e,
+  pct_change_e = pct_delta_e,
   # Gini
   gini_baseline = gini_base,
   gini_climate = gini_climate,
@@ -1728,14 +1085,15 @@ excess_by_age <- lifetable[, .(
   age, year,
   dx_baseline = dx_base,
   dx_climate = dx_climate,
-  excess_deaths,
+  excess_deaths = excess_deaths_age,
   below_threshold,
   multiplier
 )]
 
-excess_path <- sprintf("results/excess_deaths_by_age_%s_ssp%d.csv",
+excess_path <- sprintf("results/excess_deaths_by_age_%s_ssp%d_cohort%d.csv",
                        tolower(gsub(" ", "_", city)),
-                       scenario)
+                       scenario,
+                       cohort_birth_year)
 
 fwrite(excess_by_age, excess_path)
 cat(sprintf("Saved: %s\n", excess_path))
@@ -1743,7 +1101,7 @@ cat(sprintf("Saved: %s\n", excess_path))
 
 ---
 
-## 14.7 Key Findings Interpretation
+## 8.1 Key Findings Interpretation
 
 ```{r interpretation}
 cat("\n=== KEY FINDINGS ===\n\n")
@@ -1753,13 +1111,13 @@ cat(sprintf("For the cohort born in %d in %s under SSP%d:\n\n",
 
 # Life expectancy
 cat("1. LIFE EXPECTANCY\n")
-if (delta_e20 < 0) {
+if (delta_e < 0) {
   cat(sprintf("   → Climate change REDUCES life expectancy by %.2f years (%.2f%%)\n",
-              abs(delta_e20), abs(pct_delta_e20)))
-  cat(sprintf("   → Equivalent to %.1f months lost\n", abs(delta_e20) * 12))
+              abs(delta_e), abs(pct_delta_e)))
+  cat(sprintf("   → Equivalent to %.1f months lost\n", abs(delta_e) * 12))
 } else {
   cat(sprintf("   → Climate change INCREASES life expectancy by %.2f years (%.2f%%)\n",
-              delta_e20, pct_delta_e20))
+              delta_e, pct_delta_e))
   cat("   → (Likely due to reduced cold-related mortality)\n")
 }
 
@@ -1798,7 +1156,7 @@ if (pct_below > 60) {
 # Policy implication
 cat("\n4. POLICY IMPLICATION\n")
 if (delta_gini > 0) {
-  cat("   → Without adaptation, climate change increases health inequity\n")
+  cat("   → Without intervention, climate change increases health inequity\n")
   cat("   → Priority: protect vulnerable 'younger old' populations\n")
 } else {
   cat("   → Climate has a compression effect on lifespans\n")
@@ -1811,20 +1169,26 @@ cat(sprintf("\n   → With %.0f%% adaptation by 2100, these impacts are partiall
 
 ---
 
-## Next Steps for Full Pipeline
+# 9. Next Steps
+
+This analysis provides the methodological foundation for comprehensive multi-scenario studies:
 
 1. **Multiple scenarios**: Run for all SSPs (1, 2, 3, 5) and adaptation levels (0%, 25%, 50%, 75%, 100%)
 2. **Multiple cities**: Extend to 10-20 European cities (Vienna, Madrid, Stockholm, Athens, etc.)
-3. **Geographic decomposition**: Compute within-city vs between-city inequality components
-4. **Temporal trends**: Track how LI evolves year-by-year (not just single cohort)
-5. **Heat vs cold decomposition**: Separate LI impacts of heat vs cold mortality
+3. **Multiple cohorts**: Analyze cohorts born in different decades (2000, 2020, 2040, etc.)
+4. **Geographic decomposition**: Compute within-city vs between-city inequality components
+5. **Temporal trends**: Track how LI evolves year-by-year
+6. **Heat vs cold decomposition**: Separate LI impacts of heat vs cold mortality
 
-This single-city demo provides the **methodological foundation** for the full multi-scenario, multi-city analysis in Simon's Paper 1.
+**To run this analysis for a different scenario**:
+1. Modify configuration in Part 1 (city, scenario, adaptation)
+2. Run Part 1 to generate new multipliers
+3. Re-run Part 2 with the same configuration
 
 ---
 
 # Session Information
 
-```{r session-info-lifetable}
+```{r session-info}
 sessionInfo()
 ```
