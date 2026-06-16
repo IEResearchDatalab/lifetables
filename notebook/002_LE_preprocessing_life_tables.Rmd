@@ -77,11 +77,11 @@ cat("Libraries loaded successfully.\n")
 
 ```{r set-config}
 # Core analysis settings
-city <- "Vienna"
-city_code <- "AT001C"
+city <- "Madrid"
+city_code <- "ES001C"
 scenario <- 3
 scenario_label <- "SSP3-7.0"
-adaptation_level <- 0.2  # 20% risk reduction by 2100
+adaptation_level <- 0.0
 
 # Baseline mortality settings (Eurostat EUROPOP2023)
 geo_code <- "AT"

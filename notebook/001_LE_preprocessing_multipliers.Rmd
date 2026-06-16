@@ -44,10 +44,10 @@ We begin by selecting the analysis parameters:
 - **Adaptation level**: The fraction of heat-related excess risk eliminated by 2100 (0 = no adaptation, 1 = complete adaptation)
 
 ```{r setup}
-city <- "Vienna"
-city_code <- "AT001C"
-scenario <- 3  # SSP3-7.0
-adaptation_level <- 0.2  # 20% risk reduction by 2100
+city <- "Madrid"
+city_code <- "ES001C"
+scenario <- 3
+adaptation_level <- 0.0
 
 cat(sprintf("Analysis Configuration:\n"))
 cat(sprintf("  City: %s (%s)\n", city, city_code))
