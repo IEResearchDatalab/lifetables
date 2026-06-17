@@ -1,0 +1,336 @@
+---
+title: "Disaggregate Annual ANs to Single Years of Age Using PCLM"
+subtitle: "Part 2: Age-Group to Single-Age Disaggregation"
+author: "Daniel Precioso"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    code_folding: show
+    theme: flatly
+    fig_width: 10
+    fig_height: 6
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    fig_width: 10
+    fig_height: 6
+    keep_tex: false
+---
+
+```{r setup-knitr, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  collapse = FALSE,
+  comment = "##",
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+# Overview
+
+This notebook takes the annual attributable numbers (ANs) by wide age group from Notebook 1 and **disaggregates them to single years of age** using the **Penalized Composite Link Model (PCLM)**.
+
+The PCLM (Rizzi et al. 2015) estimates a smooth latent distribution from coarsely grouped count data. It treats the observed age-group ANs as Poisson-distributed aggregates of an underlying smooth single-age sequence, and recovers that sequence through penalized maximum likelihood.
+
+## Input
+
+- `madrid_projected_ans_annual.csv` — annual ANs by year, age group (20–44, 45–64, 65–74, 75–84, 85+), and temperature range (extreme_cold, moderate_cold, moderate_heat, extreme_heat)
+
+## Output
+
+- `madrid_projected_ans_single_age.csv` — annual ANs by year, single age (20–100), and temperature range
+
+---
+
+# 1. Setup and Configuration
+
+```{r setup-libraries}
+library(data.table)
+library(ungroup)
+library(ggplot2)
+library(scales)
+
+cat("Libraries loaded successfully.\n")
+```
+
+```{r set-config}
+# Input paths
+input_annual_ans <- "../results/demo_madrid_part1/madrid_projected_ans_annual.csv"
+
+# Output paths
+output_dir <- "../results/demo_madrid_part2"
+output_single_age <- file.path(output_dir, "madrid_projected_ans_single_age.csv")
+output_diagnostic <- file.path(output_dir, "madrid_pclm_diagnostics.csv")
+
+# PCLM parameters
+pclm_nlast <- 16               # Last open interval 85+ capped at 100 (ages 85..100 = 16 years)
+pclm_lambda <- NA              # Auto-select smoothing parameter via BIC
+pclm_deg <- 3L                 # B-spline degree
+pclm_kr <- 2L                  # Knot ratio (intervals per knot)
+
+# Age group boundaries (start of each interval)
+age_group_starts <- c(20, 45, 65, 75, 85)
+age_group_labels <- c("20-44", "45-64", "65-74", "75-84", "85+")
+single_ages <- 20:100
+
+cat("=== Configuration ===\n")
+cat(sprintf("  Age groups: %s\n", paste(age_group_labels, collapse = ", ")))
+cat(sprintf("  Single ages: %d–%d (%d ages)\n",
+            min(single_ages), max(single_ages), length(single_ages)))
+cat(sprintf("  PCLM knot ratio: %d, degree: %d\n", pclm_kr, pclm_deg))
+```
+
+---
+
+# 2. Load Annual ANs from Notebook 1
+
+```{r load-annual-ans}
+annual_ans <- fread(input_annual_ans)
+
+cat("=== Annual ANs Loaded ===\n")
+cat(sprintf("  Rows: %s\n", format(nrow(annual_ans), big.mark = ",")))
+cat(sprintf("  Years: %d–%d\n", min(annual_ans$year), max(annual_ans$year)))
+cat(sprintf("  Age groups: %s\n", paste(unique(annual_ans$age_group), collapse = ", ")))
+cat(sprintf("  Temp ranges: %s\n", paste(unique(annual_ans$temp_range), collapse = ", ")))
+```
+
+---
+
+# 3. PCLM Disaggregation
+
+For each combination of year and temperature range, we extract the five age-group ANs and apply the PCLM to recover the single-age distribution.
+
+## 3.1 Define the PCLM Wrapper
+
+```{r pclm-wrapper}
+disaggregate_an <- function(an_values, age_starts = age_group_starts,
+                            nlast = pclm_nlast, lambda = pclm_lambda,
+                            deg = pclm_deg, kr = pclm_kr) {
+  M <- pclm(
+    x = age_starts,
+    y = an_values,
+    nlast = nlast,
+    out.step = 1,
+    control = list(
+      lambda = lambda,
+      kr = kr,
+      deg = deg,
+      max.iter = 200,
+      tol = 1e-8,
+      opt.method = "BIC"
+    )
+  )
+  as.numeric(fitted(M))
+}
+```
+
+## 3.2 Run Disaggregation for All Year–Temp-Range Combinations
+
+```{r run-pclm-all}
+results_list <- list()
+diagnostics_list <- list()
+
+combos <- unique(annual_ans[, .(year, temp_range)])
+n_combos <- nrow(combos)
+
+for (i in seq_len(n_combos)) {
+  yr <- combos$year[i]
+  tr <- combos$temp_range[i]
+
+  subset_dt <- annual_ans[year == yr & temp_range == tr]
+  an_vec <- subset_dt$AN
+
+  if (length(an_vec) != 5L) {
+    warning(sprintf("Skipping year=%d, temp_range=%s: %d age groups (expected 5)",
+                    yr, tr, length(an_vec)))
+    next
+  }
+
+  single_an <- disaggregate_an(an_vec)
+
+  results_list[[length(results_list) + 1L]] <- data.table(
+    year = yr,
+    age = single_ages,
+    temp_range = tr,
+    AN = single_an
+  )
+
+  # Store diagnostics
+  diagnostics_list[[length(diagnostics_list) + 1L]] <- data.table(
+    year = yr,
+    temp_range = tr,
+    total_an_input = sum(an_vec),
+    total_an_output = sum(single_an),
+    n_age_groups = 5L,
+    n_single_ages = length(single_an)
+  )
+}
+
+single_age_an <- rbindlist(results_list)
+diagnostics <- rbindlist(diagnostics_list)
+
+cat("=== PCLM Disaggregation Complete ===\n")
+cat(sprintf("  Combinations processed: %d\n", n_combos))
+cat(sprintf("  Single-age AN rows: %s\n", format(nrow(single_age_an), big.mark = ",")))
+```
+
+## 3.3 Verify Conservation of Total AN
+
+```{r verify-totals}
+diagnostics[, diff := total_an_input - total_an_output]
+diagnostics[, relative_diff := diff / total_an_input * 100]
+
+cat("=== Conservation Check ===\n")
+cat(sprintf("  Max absolute difference: %.6f\n", max(abs(diagnostics$diff))))
+cat(sprintf("  Max relative diff (pct): %.10f\n", max(abs(diagnostics$relative_diff))))
+cat(sprintf("  All relative diffs < 1e-6: %s\n", all(abs(diagnostics$diff) < 1e-6)))
+
+# Verify that within each year, the original age-group totals are approximately preserved
+# by re-aggregating the single-age ANs back into the wide age groups
+temp_check <- single_age_an[year == 2020 & temp_range == "moderate_heat"]
+reagg <- data.table(
+  age_group = age_group_labels,
+  original = annual_ans[year == 2020 & temp_range == "moderate_heat"]$AN,
+  reconstructed = c(
+    sum(temp_check[age >= 20 & age <= 44]$AN),
+    sum(temp_check[age >= 45 & age <= 64]$AN),
+    sum(temp_check[age >= 65 & age <= 74]$AN),
+    sum(temp_check[age >= 75 & age <= 84]$AN),
+    sum(temp_check[age >= 85 & age <= 100]$AN)
+  )
+)
+reagg[, diff := original - reconstructed]
+
+cat("\n=== Re-aggregation Verification (2020 moderate_heat) ===\n")
+print(reagg)
+```
+
+---
+
+# 4. Add Metadata Columns
+
+```{r add-metadata}
+meta <- unique(annual_ans[, .(city, city_code, gcm, ssp, adaptation)])
+for (col in names(meta)) {
+  set(single_age_an, j = col, value = meta[[col]][1L])
+}
+setcolorder(single_age_an, c("city", "city_code", "gcm", "ssp", "adaptation",
+                              "year", "age", "temp_range", "AN"))
+
+cat("=== Single-Age AN Table ===\n")
+print(head(single_age_an, 10))
+```
+
+---
+
+# 5. Diagnostics and Visualisation
+
+## 5.1 Compare Age-Group vs Single-Age Distributions
+
+```{r plot-age-group-vs-single}
+plot_years <- c(2020, 2050, 2099)
+
+plot_data <- single_age_an[year %in% plot_years]
+
+ggplot(plot_data, aes(x = age, y = AN, color = factor(year))) +
+  geom_line(linewidth = 1) +
+  facet_wrap(~ temp_range, scales = "free_y") +
+  labs(
+    title = "Single-Age Attributable Numbers (PCLM Disaggregation)",
+    subtitle = sprintf("%s | %s | %s",
+                       unique(plot_data$city),
+                       unique(plot_data$ssp),
+                       unique(plot_data$gcm)),
+    x = "Age",
+    y = "Attributable number (AN)",
+    color = "Year"
+  ) +
+  scale_y_continuous(labels = comma) +
+  theme_minimal(base_size = 12)
+```
+
+## 5.2 Heatmap of Single-Age ANs Over Time
+
+```{r plot-heatmap}
+# Pivot to wide for heatmap: year x age for moderate_heat (most impactful)
+heat_data <- single_age_an[temp_range %in% c("extreme_heat", "extreme_cold")]
+
+ggplot(heat_data, aes(x = year, y = age, fill = AN)) +
+  geom_tile() +
+  facet_wrap(~ temp_range, ncol = 1) +
+  scale_fill_gradient2(low = "white", high = "red", labels = comma) +
+  labs(
+    title = "Single-Age ANs Over Time by Temperature Range",
+    subtitle = sprintf("%s | %s | %s",
+                       unique(heat_data$city),
+                       unique(heat_data$ssp),
+                       unique(heat_data$gcm)),
+    x = "Year",
+    y = "Age",
+    fill = "AN"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+## 5.3 Cross-Section: Age Profile in Selected Years
+
+```{r plot-cross-section}
+cross_data <- single_age_an[year %in% plot_years &
+                            temp_range %in% c("moderate_heat", "extreme_heat", "moderate_cold")]
+
+ggplot(cross_data, aes(x = age, y = AN, color = factor(year), linetype = temp_range)) +
+  geom_line(linewidth = 0.8) +
+  labs(
+    title = "Age Profile of Attributable Mortality",
+    subtitle = sprintf("%s | %s", unique(cross_data$city), unique(cross_data$ssp)),
+    x = "Age",
+    y = "Attributable number (AN)",
+    color = "Year",
+    linetype = "Temperature range"
+  ) +
+  scale_y_continuous(labels = comma) +
+  theme_minimal(base_size = 12)
+```
+
+---
+
+# 6. Export Results
+
+```{r export-results}
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+fwrite(single_age_an, output_single_age)
+fwrite(diagnostics, output_diagnostic)
+
+cat("=== Files Written ===\n")
+cat(sprintf("  Single-age AN table: %s\n", output_single_age))
+cat(sprintf("  Diagnostics: %s\n", output_diagnostic))
+```
+
+---
+
+# 7. Notebook Summary
+
+This notebook:
+
+1. loaded the annual attributable numbers (ANs) by wide age group from Notebook 1,
+2. applied the Penalized Composite Link Model (PCLM) to disaggregate each year–temperature-range combination from 5 wide age groups (20–44, 45–64, 65–74, 75–84, 85+) to 81 single ages (20–100),
+3. verified that the total AN is conserved within numerical tolerance,
+4. produced diagnostic plots showing the smooth age distributions.
+
+## Main deliverable for the next notebook
+
+The file `madrid_projected_ans_single_age.csv` contains annual ANs by year, single age, and temperature range. The next notebook in the series will combine these with all-cause mortality and population data to construct the "dataset for analysis" and derive period life-table inputs.
+
+---
+
+# Session Information
+
+```{r session-info}
+sessionInfo()
+```
