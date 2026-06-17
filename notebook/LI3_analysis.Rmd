@@ -1,0 +1,394 @@
+---
+title: "Construct the Dataset for Analysis and Derive Period Life-Table Inputs"
+subtitle: "Part 3: All-Cause Mortality, Population, and Temperature-Attributable Mortality"
+author: "Daniel Precioso"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    code_folding: show
+    theme: flatly
+    fig_width: 10
+    fig_height: 6
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    fig_width: 10
+    fig_height: 6
+    keep_tex: false
+---
+
+```{r setup-knitr, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  collapse = FALSE,
+  comment = "##",
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+# Overview
+
+This notebook combines three data streams into a single **analysis dataset**:
+
+1. **Single-age attributable numbers (ANs)** by temperature range (from Notebook 2)
+2. **Single-age all-cause mortality** for Madrid
+3. **Single-age population** for Madrid
+
+The dataset is structured following the approach described in the life-table decomposition literature (Lloyd-style supplementary table), with separate columns for all-cause mortality and temperature-attributable mortality by range.
+
+## Inputs
+
+- `results/demo_madrid_part2/madrid_projected_ans_single_age.csv` — disaggregated ANs
+- `data/city_results.csv` — baseline Madrid population and deaths by age group
+- `data/ES_mortality_male.csv` — national single-age mortality trends
+- `data/coefs.csv` — ERF coefficients (for reference; ANs are pre-computed)
+
+## Outputs
+
+- `results/demo_madrid_part3/madrid_analysis_dataset.csv` — combined analysis dataset
+- `results/demo_madrid_part3/madrid_period_lifetable_inputs.csv` — mx and population by year
+
+---
+
+# 1. Setup and Configuration
+
+```{r setup-libraries}
+library(data.table)
+library(ungroup)
+library(ggplot2)
+library(scales)
+
+cat("Libraries loaded successfully.\n")
+```
+
+```{r set-config}
+# Paths
+city_code <- "ES001C"
+city <- "Madrid"
+gcm <- "tas_ACCESS_CM2"
+ssp_label <- "SSP3-7.0"
+
+input_single_age_an <- "../results/demo_madrid_part2/madrid_projected_ans_single_age.csv"
+input_city_results <- "../data/city_results.csv"
+input_es_mortality  <- "../data/mortality_projections/ES_mortality_male.csv"
+input_coefs <- "../data/coefs.csv"
+
+output_dir <- "../results/demo_madrid_part3"
+output_dataset <- file.path(output_dir, "madrid_analysis_dataset.csv")
+output_lifetable_inputs <- file.path(output_dir, "madrid_period_lifetable_inputs.csv")
+output_pop_single <- file.path(output_dir, "madrid_population_single_age.csv")
+
+# Age configuration
+age_groups <- c("20-44", "45-64", "65-74", "75-84", "85+")
+age_group_starts <- c(20, 45, 65, 75, 85)
+single_ages <- 20:100
+n_ages <- length(single_ages)
+pclm_nlast <- 16  # ages 85-100
+
+# Projection baseline year for national mortality
+mortality_baseline_year <- 2022L
+
+cat("=== Configuration ===\n")
+cat(sprintf("  City: %s (%s)\n", city, city_code))
+cat(sprintf("  Scenario: %s | GCM: %s\n", ssp_label, gcm))
+cat(sprintf("  Single ages: %d–%d\n", min(single_ages), max(single_ages)))
+```
+
+---
+
+# 2. Load Pre-Computed Single-Age ANs
+
+```{r load-single-age-ans}
+single_an <- fread(input_single_age_an)
+
+# Set a key for merging
+setkey(single_an, year, age, temp_range)
+
+cat("=== Single-Age ANs Loaded ===\n")
+cat(sprintf("  Rows: %s\n", format(nrow(single_an), big.mark = ",")))
+cat(sprintf("  Years: %d–%d\n", min(single_an$year), max(single_an$year)))
+cat(sprintf("  Ages: %d–%d\n", min(single_an$age), max(single_an$age)))
+```
+
+---
+
+# 3. Build Single-Age Population for Madrid
+
+We use the PCLM to disaggregate the five wide-age-group populations from `city_results.csv` into a smooth single-age distribution. The disaggregated population is held at the baseline age structure and scaled by the total population trend from `parsed_pop_all.csv`.
+
+```{r build-population}
+city_res <- fread(input_city_results)
+madrid_base <- city_res[URAU_CODE == city_code & agegroup %in% age_groups]
+
+base_pop <- setNames(madrid_base$agepop, madrid_base$agegroup)
+base_death <- setNames(madrid_base$death, madrid_base$agegroup)
+base_mx <- base_death / base_pop  # age-group mx
+
+# Disaggregate population to single ages using PCLM
+pop_pclm <- pclm(x = age_group_starts, y = base_pop, nlast = pclm_nlast,
+                 out.step = 1, control = list(lambda = NA, kr = 2, deg = 3))
+pop_single_age <- as.numeric(fitted(pop_pclm))
+pop_single_age <- pmax(pop_single_age, 0)
+pop_single_age <- pop_single_age / sum(pop_single_age) * sum(base_pop)  # renormalise
+
+# Disaggregate deaths to single ages using PCLM
+death_pclm <- pclm(x = age_group_starts, y = base_death, nlast = pclm_nlast,
+                   out.step = 1, control = list(lambda = NA, kr = 2, deg = 3))
+death_single_age <- as.numeric(fitted(death_pclm))
+death_single_age <- pmax(death_single_age, 0)
+death_single_age <- death_single_age / sum(death_single_age) * sum(base_death)
+
+# Baseline single-age mx
+mx_single_age_baseline <- death_single_age / pop_single_age
+mx_single_age_baseline[is.nan(mx_single_age_baseline) | is.infinite(mx_single_age_baseline)] <- 0
+
+pop_dt <- data.table(age = single_ages, population = round(pop_single_age),
+                     mx_baseline = mx_single_age_baseline)
+
+cat("=== Single-Age Population Built ===\n")
+print(head(pop_dt, 10))
+cat(sprintf("  Total population (20+): %.0f\n", sum(pop_dt$population)))
+```
+
+---
+
+# 4. Build Projected All-Cause Mortality
+
+We project Madrid's single-age all-cause mortality by applying the **national mortality trend** from `ES_mortality_male.csv` to Madrid's baseline age-group mx. The national trend provides the relative change in mx for each single age, which we scale to Madrid's baseline.
+
+```{r build-mortality}
+es_mort <- fread(input_es_mortality)
+es_mort <- es_mort[age %in% single_ages]
+setkey(es_mort, age, year)
+
+# Get baseline national mx (2022)
+es_baseline <- es_mort[year == mortality_baseline_year]
+setnames(es_baseline, "mx", "mx_es_base")
+es_baseline <- es_baseline[, .(age, mx_es_base)]
+
+# For each age and year, compute the ratio to baseline
+es_mort <- merge(es_mort, es_baseline, by = "age")
+es_mort[, mx_ratio := mx / mx_es_base]
+
+# Merge with Madrid baseline and compute projected mx
+proj_mx <- merge(es_mort[, .(age, year, mx_ratio)], pop_dt[, .(age, mx_baseline)],
+                 by = "age", all = TRUE)
+proj_mx[, mx := mx_baseline * mx_ratio]
+
+cat("=== Projected All-Cause Mortality ===\n")
+cat(sprintf("  Years: %d–%d\n", min(proj_mx$year), max(proj_mx$year)))
+cat(sprintf("  Ages: %d–%d\n", min(proj_mx$age), max(proj_mx$age)))
+print(proj_mx[year %in% c(2022, 2050, 2099) & age %in% c(20, 50, 80)])
+```
+
+---
+
+# 5. Build Analysis Dataset
+
+Combine population, all-cause mortality, and single-age ANs into the final analysis table.
+
+```{r build-dataset}
+# Start with population and all-cause mx
+analysis_dt <- proj_mx[, .(year, age, mx, population = pop_dt$population[match(age, pop_dt$age)])]
+
+# Add annual deaths
+analysis_dt[, deaths := mx * population]
+
+# Melt single-age ANs from wide temp_range to columns
+an_wide <- dcast(single_an, year + age ~ temp_range, value.var = "AN", fill = 0)
+setnames(an_wide,
+         old = c("extreme_cold", "moderate_cold", "moderate_heat", "extreme_heat"),
+         new = c("an_extreme_cold", "an_moderate_cold", "an_moderate_heat", "an_extreme_heat"))
+
+# Merge into analysis dataset
+analysis_dt <- merge(analysis_dt, an_wide, by = c("year", "age"), all.x = TRUE)
+
+# Fill missing ANs with 0
+for (col in c("an_extreme_cold", "an_moderate_cold", "an_moderate_heat", "an_extreme_heat")) {
+  if (col %in% names(analysis_dt)) {
+    analysis_dt[is.na(get(col)), (col) := 0]
+  }
+}
+
+# Compute total attributable deaths
+analysis_dt[, an_total := an_extreme_cold + an_moderate_cold + an_moderate_heat + an_extreme_heat]
+
+# Compute baseline (non-attributable) deaths
+analysis_dt[, deaths_baseline := deaths - an_total]
+analysis_dt[deaths_baseline < 0, deaths_baseline := 0]
+
+# Add metadata
+analysis_dt[, `:=`(
+  city = city,
+  city_code = city_code,
+  gcm = gcm,
+  ssp = ssp_label
+)]
+
+setcolorder(analysis_dt, c("city", "city_code", "gcm", "ssp",
+                            "year", "age", "population",
+                            "deaths", "mx",
+                            "deaths_baseline",
+                            "an_total",
+                            "an_extreme_cold", "an_moderate_cold",
+                            "an_moderate_heat", "an_extreme_heat"))
+setorder(analysis_dt, year, age)
+
+cat("=== Analysis Dataset Built ===\n")
+cat(sprintf("  Rows: %s\n", format(nrow(analysis_dt), big.mark = ",")))
+cat(sprintf("  Years: %d–%d\n", min(analysis_dt$year), max(analysis_dt$year)))
+cat(sprintf("  Ages: %d–%d\n", min(analysis_dt$age), max(analysis_dt$age)))
+print(head(analysis_dt[year == 2022 & age %in% c(20, 30, 40, 50, 60, 70, 80)], 10))
+```
+
+---
+
+# 6. Derive Period Life-Table Inputs
+
+For each year, compute period life tables (baseline and climate-adjusted) using the standard demographic approach.
+
+```{r derive-lifetable-inputs}
+source("../R/period_lifetable.R")
+source("../R/utils.R")
+
+lifetable_years <- sort(unique(analysis_dt$year))
+
+lt_list_base <- list()
+lt_list_clim <- list()
+
+for (yr in lifetable_years) {
+  yr_data <- analysis_dt[year == yr]
+  
+  # Baseline life table (no temperature-attributable mortality)
+  mx_base <- yr_data$deaths_baseline / yr_data$population
+  mx_base[is.nan(mx_base) | is.infinite(mx_base)] <- 0
+  lt_base <- lifetable(mx = mx_base, age = yr_data$age, ax = 0.5)
+  lt_base[, year := yr]
+  lt_list_base[[length(lt_list_base) + 1L]] <- lt_base
+  
+  # Climate-adjusted life table (with temperature-attributable mortality)
+  mx_clim <- yr_data$deaths / yr_data$population
+  mx_clim[is.nan(mx_clim) | is.infinite(mx_clim)] <- 0
+  lt_clim <- lifetable(mx = mx_clim, age = yr_data$age, ax = 0.5)
+  lt_clim[, year := yr]
+  lt_list_clim[[length(lt_list_clim) + 1L]] <- lt_clim
+}
+
+lt_base_all <- rbindlist(lt_list_base)
+lt_clim_all <- rbindlist(lt_list_clim)
+
+# Extract life expectancy at birth (age 20) for each year
+le_base <- lt_base_all[age == 20, .(year, le_base = ex)]
+le_clim <- lt_clim_all[age == 20, .(year, le_clim = ex)]
+
+cat("=== Period Life Tables Computed ===\n")
+cat(sprintf("  Years: %d–%d\n", min(lifetable_years), max(lifetable_years)))
+print(merge(le_base, le_clim, by = "year")[year %in% c(2022, 2050, 2099)])
+```
+
+---
+
+# 7. Diagnostics
+
+## 7.1 Verify Age-Group Totals
+
+```{r verify-age-group-totals}
+# Verify that the single-age population sums match the original city_results
+reagg_pop <- data.table(
+  age_group = age_groups,
+  original = base_pop,
+  reconstructed = c(
+    sum(pop_dt[age >= 20 & age <= 44]$population),
+    sum(pop_dt[age >= 45 & age <= 64]$population),
+    sum(pop_dt[age >= 65 & age <= 74]$population),
+    sum(pop_dt[age >= 75 & age <= 84]$population),
+    sum(pop_dt[age >= 85 & age <= 100]$population)
+  )
+)
+reagg_pop[, diff := original - reconstructed]
+
+cat("=== Population Re-Aggregation ===\n")
+print(reagg_pop)
+```
+
+## 7.2 Life Expectancy Over Time
+
+```{r plot-life-expectancy}
+le_all <- merge(le_base, le_clim, by = "year")
+
+ggplot(melt(le_all, id.vars = "year", variable.name = "scenario", value.name = "ex"),
+       aes(x = year, y = ex, color = scenario)) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = sprintf("Period Life Expectancy at Age 20 — %s", city),
+    subtitle = sprintf("%s | %s | GCM: %s", city_code, ssp_label, gcm),
+    x = "Year",
+    y = "Life expectancy at age 20",
+    color = "Scenario"
+  ) +
+  scale_color_manual(
+    values = c("le_base" = "steelblue", "le_clim" = "tomato"),
+    labels = c("Baseline (no temperature)", "Climate-adjusted")
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+---
+
+# 8. Export Results
+
+```{r export}
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+fwrite(analysis_dt, output_dataset)
+fwrite(pop_dt, output_pop_single)
+
+# Life-table inputs: mx by year and age
+lt_inputs <- merge(
+  analysis_dt[, .(year, age, population, mx, mx_baseline = deaths_baseline / population)],
+  lt_base_all[, .(year, age, qx_base = qx, lx_base = lx, ex_base = ex)],
+  by = c("year", "age"), all.x = TRUE
+)
+lt_inputs <- merge(
+  lt_inputs,
+  lt_clim_all[, .(year, age, qx_clim = qx, lx_clim = lx, ex_clim = ex)],
+  by = c("year", "age"), all.x = TRUE
+)
+setorder(lt_inputs, year, age)
+fwrite(lt_inputs, output_lifetable_inputs)
+
+cat("=== Files Written ===\n")
+cat(sprintf("  Analysis dataset: %s\n", output_dataset))
+cat(sprintf("  Period life-table inputs: %s\n", output_lifetable_inputs))
+cat(sprintf("  Single-age population: %s\n", output_pop_single))
+```
+
+---
+
+# 9. Notebook Summary
+
+This notebook:
+
+1. loaded single-age attributable numbers (ANs) from Notebook 2,
+2. built single-age population for Madrid using PCLM disaggregation of the city_results.csv age groups,
+3. built projected all-cause mortality by applying national mortality trends from `ES_mortality_male.csv` to Madrid's baseline,
+4. combined all streams into a single analysis dataset with all-cause mortality, baseline mortality, and temperature-attributable mortality by range,
+5. derived period life tables (baseline and climate-adjusted) for each projection year,
+6. computed life expectancy at age 20 for both scenarios.
+
+## Main deliverable for the next notebook
+
+The analysis dataset (`madrid_analysis_dataset.csv`) and period life-table inputs (`madrid_period_lifetable_inputs.csv`) are ready. Notebook 4 will apply the Lloyd-style decomposition to attribute changes in life expectancy and lifespan inequality to age groups and temperature ranges.
+
+---
+
+# Session Information
+
+```{r session-info}
+sessionInfo()
+```
