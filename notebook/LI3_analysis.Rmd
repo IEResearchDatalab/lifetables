@@ -67,21 +67,26 @@ cat("Libraries loaded successfully.\n")
 ```
 
 ```{r set-config}
-# Paths
-city_code <- "ES001C"
+# Demo configuration (must match Notebook 1)
 city <- "Madrid"
-gcm <- "tas_ACCESS_CM2"
+city_code <- "ES001C"
 ssp_label <- "SSP3-7.0"
+gcm <- "tas_ACCESS_CM2"
 
-input_single_age_an <- "../results/demo_madrid_part2/madrid_projected_ans_single_age.csv"
+# Shared output directory (same across all notebooks)
+output_dir <- "../results/demo"
+city_prefix <- tolower(gsub(" ", "_", city))
+
+# Input paths
+input_single_age_an <- file.path(output_dir, paste0(city_prefix, "_ans_single_age.csv"))
 input_city_results <- "../data/city_results.csv"
 input_es_mortality  <- "../data/mortality_projections/ES_mortality_male.csv"
 input_coefs <- "../data/coefs.csv"
 
-output_dir <- "../results/demo_madrid_part3"
-output_dataset <- file.path(output_dir, "madrid_analysis_dataset.csv")
-output_lifetable_inputs <- file.path(output_dir, "madrid_period_lifetable_inputs.csv")
-output_pop_single <- file.path(output_dir, "madrid_population_single_age.csv")
+# Output paths
+output_dataset <- file.path(output_dir, paste0(city_prefix, "_analysis_dataset.csv"))
+output_lifetable_inputs <- file.path(output_dir, paste0(city_prefix, "_lifetable_inputs.csv"))
+output_pop_single <- file.path(output_dir, paste0(city_prefix, "_population_single_age.csv"))
 
 # Age configuration
 age_groups <- c("20-44", "45-64", "65-74", "75-84", "85+")
@@ -96,6 +101,7 @@ mortality_baseline_year <- 2022L
 cat("=== Configuration ===\n")
 cat(sprintf("  City: %s (%s)\n", city, city_code))
 cat(sprintf("  Scenario: %s | GCM: %s\n", ssp_label, gcm))
+cat(sprintf("  Output directory: %s\n", output_dir))
 cat(sprintf("  Single ages: %d–%d\n", min(single_ages), max(single_ages)))
 ```
 

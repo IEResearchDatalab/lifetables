@@ -66,13 +66,21 @@ cat("Libraries loaded successfully.\n")
 ```
 
 ```{r set-config}
-# Paths
-input_dataset <- "../results/demo_madrid_part3/madrid_analysis_dataset.csv"
+# Demo configuration (must match Notebook 1)
+city <- "Madrid"
+city_code <- "ES001C"
 
-output_dir <- "../results/demo_madrid_part4"
-output_le_decomp <- file.path(output_dir, "madrid_le_decomposition.csv")
-output_li_decomp <- file.path(output_dir, "madrid_li_decomposition.csv")
-output_li_series <- file.path(output_dir, "madrid_lifespan_inequality.csv")
+# Shared output directory (same across all notebooks)
+output_dir <- "../results/demo"
+city_prefix <- tolower(gsub(" ", "_", city))
+
+# Input paths
+input_dataset <- file.path(output_dir, paste0(city_prefix, "_analysis_dataset.csv"))
+
+# Output paths
+output_le_decomp <- file.path(output_dir, paste0(city_prefix, "_le_decomposition.csv"))
+output_li_decomp <- file.path(output_dir, paste0(city_prefix, "_li_decomposition.csv"))
+output_li_series <- file.path(output_dir, paste0(city_prefix, "_lifespan_inequality.csv"))
 
 # Selected years for detailed decomposition
 decomp_years <- c(2022, 2050, 2099)
@@ -82,6 +90,8 @@ temp_ranges <- c("an_extreme_cold", "an_moderate_cold", "an_moderate_heat", "an_
 temp_labels <- c("Extreme cold", "Moderate cold", "Moderate heat", "Extreme heat")
 
 cat("=== Configuration ===\n")
+cat(sprintf("  City: %s (%s)\n", city, city_code))
+cat(sprintf("  Output directory: %s\n", output_dir))
 cat(sprintf("  Decomposition years: %s\n", paste(decomp_years, collapse = ", ")))
 ```
 
@@ -403,7 +413,7 @@ print(dcast(summary_decomp[year %in% decomp_years],
 ```{r export}
 dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
 
-fwrite(age_decomp, file.path(output_dir, "madrid_age_decomposition.csv"))
+fwrite(age_decomp, file.path(output_dir, paste0(city_prefix, "_age_decomposition.csv")))
 fwrite(decomp_by_temp, output_le_decomp)
 fwrite(summary_decomp, output_li_decomp)
 fwrite(stats_all, output_li_series)

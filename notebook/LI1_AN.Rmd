@@ -130,12 +130,13 @@ age_groups <- c("20-44", "45-64", "65-74", "75-84", "85+")
 # Input data paths
 coefs_path <- "../data/coefs.csv"
 temp_path <- "../data/tmeanproj.gz.parquet"
-demography_path <- "../data/city_demography.csv"
+demography_path <- file.path(tempdir(), "city_demography.csv")
 
-# Output paths
-output_dir <- "../results/demo_madrid_part1"
-output_file_annual <- file.path(output_dir, "madrid_projected_ans_annual.csv")
-output_file_daily <- file.path(output_dir, "madrid_projected_ans_daily.csv")
+# Output paths — single unified directory
+output_dir <- "../results/demo"
+city_prefix <- tolower(gsub(" ", "_", city))
+output_file_annual <- file.path(output_dir, paste0(city_prefix, "_ans_annual.csv"))
+output_file_daily <- file.path(output_dir, paste0(city_prefix, "_ans_daily.csv"))
 
 cat("=== Demo Configuration ===\n")
 cat(sprintf("  City: %s (%s)\n", city, city_code))

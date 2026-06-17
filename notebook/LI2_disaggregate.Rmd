@@ -59,13 +59,20 @@ cat("Libraries loaded successfully.\n")
 ```
 
 ```{r set-config}
+# Demo configuration (must match Notebook 1)
+city <- "Madrid"
+city_code <- "ES001C"
+
+# Shared output directory (same across all notebooks)
+output_dir <- "../results/demo"
+city_prefix <- tolower(gsub(" ", "_", city))
+
 # Input paths
-input_annual_ans <- "../results/demo_madrid_part1/madrid_projected_ans_annual.csv"
+input_annual_ans <- file.path(output_dir, paste0(city_prefix, "_ans_annual.csv"))
 
 # Output paths
-output_dir <- "../results/demo_madrid_part2"
-output_single_age <- file.path(output_dir, "madrid_projected_ans_single_age.csv")
-output_diagnostic <- file.path(output_dir, "madrid_pclm_diagnostics.csv")
+output_single_age <- file.path(output_dir, paste0(city_prefix, "_ans_single_age.csv"))
+output_diagnostic <- file.path(output_dir, paste0(city_prefix, "_pclm_diagnostics.csv"))
 
 # PCLM parameters
 pclm_nlast <- 16               # Last open interval 85+ capped at 100 (ages 85..100 = 16 years)
@@ -79,6 +86,8 @@ age_group_labels <- c("20-44", "45-64", "65-74", "75-84", "85+")
 single_ages <- 20:100
 
 cat("=== Configuration ===\n")
+cat(sprintf("  City: %s (%s)\n", city, city_code))
+cat(sprintf("  Output directory: %s\n", output_dir))
 cat(sprintf("  Age groups: %s\n", paste(age_group_labels, collapse = ", ")))
 cat(sprintf("  Single ages: %d–%d (%d ages)\n",
             min(single_ages), max(single_ages), length(single_ages)))
