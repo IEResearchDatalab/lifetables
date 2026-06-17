@@ -1,0 +1,767 @@
+---
+title: "Projected Temperature-Attributable Mortality for Madrid"
+subtitle: "Part 1: Attributable Numbers by Age Group and Temperature Range"
+author: "Daniel Precioso"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    code_folding: show
+    theme: flatly
+    fig_width: 10
+    fig_height: 6
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    fig_width: 10
+    fig_height: 6
+    keep_tex: false
+---
+
+```{r setup-knitr, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  collapse = FALSE,
+  comment = "##",
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+# Overview
+
+This notebook demonstrates the first methodological block of the pipeline for a **single city** and a **single climate model**. It follows the standard attribution framework used in the temperature-mortality literature and stops at the calculation of **annual attributable numbers (ANs)** and **attributable fractions (AFs)**.
+
+The notebook is deliberately restricted to:
+
+- **one city**: Madrid
+- **one SSP**: SSP3-7.0
+- **one climate model**: selected from the available projected temperature dataset
+- **no adaptation**
+- **wide age groups** as in the Masselot framework:
+  - 20–44
+  - 45–64
+  - 65–74
+  - 75–84
+  - 85+
+
+This notebook does **not** construct life tables or compute life expectancy or lifespan inequality. Those steps belong to later notebooks in the series.
+
+## Methodological aim
+
+For each year and age group, we compute annual temperature-attributable mortality separately for four standard temperature ranges:
+
+- **extreme cold**
+- **moderate cold**
+- **moderate heat**
+- **extreme heat**
+
+The calculation follows the standard attributable-risk logic described by Gasparrini and Leone (2014), using age-group-specific temperature-mortality exposure-response functions (ERFs) and projected daily temperatures.
+
+## Main output
+
+The main output is an annual tidy table with one row per:
+
+- city
+- climate model
+- SSP
+- year
+- age group
+- temperature range
+
+containing:
+
+- annual attributable number (**AN**)
+- annual attributable fraction (**AF**)
+
+---
+
+# 1. Setup and Configuration
+
+## 1.1 Load Required Libraries
+
+```{r setup-libraries}
+library(data.table)
+library(arrow)
+library(dlnm)
+library(splines)
+library(ggplot2)
+library(scales)
+
+cat("Libraries loaded successfully.\n")
+```
+
+---
+
+## 1.2 Define Demo Configuration
+
+```{r set-config}
+# Demo city
+city <- "Madrid"
+city_code <- "ES001C"
+
+# Scenario selection
+scenario_label <- "SSP3-7.0"
+ssp_value <- 3
+
+# Climate model selection
+# If demo_gcm is NA, the notebook will automatically use the first available GCM.
+demo_gcm <- NA_character_
+
+# No adaptation in this notebook
+adaptation_level <- 0
+
+# Time windows
+historical_year_min <- 1990
+historical_year_max <- 2019
+projection_year_min <- 2020
+projection_year_max <- 2100
+
+# Standard temperature-range thresholds
+cold_extreme_percentile <- 0.025
+heat_extreme_percentile <- 0.975
+
+# Wide age groups as used in Masselot-style prediction
+age_groups <- c("20-44", "45-64", "65-74", "75-84", "85+")
+
+# Input data paths
+coefs_path <- "../data/coefs.csv"
+temp_path <- "../data/tmeanproj.gz.parquet"
+demography_path <- "../data/city_demography.csv"
+
+# Output paths
+output_dir <- "../results/demo_madrid_part1"
+output_file_annual <- file.path(output_dir, "madrid_projected_ans_annual.csv")
+output_file_daily <- file.path(output_dir, "madrid_projected_ans_daily.csv")
+
+cat("=== Demo Configuration ===\n")
+cat(sprintf("  City: %s (%s)\n", city, city_code))
+cat(sprintf("  Scenario: %s\n", scenario_label))
+cat(sprintf("  Adaptation: %.0f%%\n", adaptation_level * 100))
+cat(sprintf("  Historical reference years: %d–%d\n", historical_year_min, historical_year_max))
+cat(sprintf("  Projection years: %d–%d\n", projection_year_min, projection_year_max))
+cat(sprintf("  Age groups: %s\n", paste(age_groups, collapse = ", ")))
+```
+
+---
+
+# 2. Data Requirements and Assumptions
+
+This notebook assumes the following data are already available in the project folder:
+
+1. **City-specific ERF coefficients** for Madrid in the wide age groups.
+2. **Historical and projected daily temperatures** for Madrid, including multiple GCMs and SSPs.
+3. **Annual demographic baseline inputs** for Madrid by age group and year, including either:
+   - annual deaths directly, or
+   - population and crude mortality rate from which annual deaths can be derived.
+
+## 2.1 Expected Demography Table Structure
+
+The notebook assumes `demography_path` contains at least these columns:
+
+- `city_code`
+- `year`
+- `age_group`
+- `population`
+- and either:
+  - `annual_deaths`, or
+  - `mx`
+
+If `annual_deaths` is missing but `mx` is available, the notebook derives:
+
+$$
+\text{annual deaths} = m_x \times \text{population}
+$$
+
+## 2.2 Important methodological notes
+
+- This notebook uses the **wide age groups** directly and does **not** yet disaggregate to single years of age.
+- It uses **no adaptation**.
+- It computes **annual ANs and AFs** only.
+- It assumes that annual expected deaths can be distributed evenly across days within each year as an approximation for impact assessment when city-wide daily deaths are not available for the future projection workflow.
+- This is consistent with the style of impact assessment used in the projection literature when projected city-wide daily mortality series are not directly available.
+
+---
+
+# 3. Load Input Data
+
+## 3.1 Helper Functions
+
+```{r helper-functions}
+check_required_cols <- function(dt, cols, table_name) {
+  missing_cols <- setdiff(cols, names(dt))
+  if (length(missing_cols) > 0L) {
+    stop(table_name, " is missing required columns: ", paste(missing_cols, collapse = ", "))
+  }
+}
+
+safe_id <- function(x) {
+  gsub("[^A-Za-z0-9_]+", "_", x)
+}
+
+assign_temp_range <- function(temp, p025, p975, mmt) {
+  fifelse(
+    temp < p025, "extreme_cold",
+    fifelse(
+      temp < mmt, "moderate_cold",
+      fifelse(
+        temp <= p975, "moderate_heat",
+        "extreme_heat"
+      )
+    )
+  )
+}
+
+compute_centered_rr <- function(temp, coef_vec, argvar, center_value) {
+  basis_temp <- do.call(onebasis, c(list(x = temp), argvar))
+  basis_center <- do.call(onebasis, c(list(x = rep(center_value, length(temp))), argvar))
+  coef_mat <- matrix(coef_vec, nrow = length(temp), ncol = length(coef_vec), byrow = TRUE)
+  log_rr <- rowSums((basis_temp - basis_center) * coef_mat)
+  pmax(exp(log_rr), 1)
+}
+```
+
+---
+
+## 3.2 Load ERF Coefficients
+
+```{r load-coefficients}
+coefs <- fread(coefs_path)
+
+required_coef_cols <- c("URAU_CODE", "agegroup", "b1", "b2", "b3", "b4", "b5")
+check_required_cols(coefs, required_coef_cols, "Coefficient table")
+
+coefs_city <- coefs[URAU_CODE == city_code]
+
+if (nrow(coefs_city) == 0L) {
+  stop("No ERF coefficients found for city_code=", city_code, " or city=", city)
+}
+
+coefs_city <- coefs_city[agegroup %in% age_groups]
+# setorder(coefs_city, match(agegroup, age_groups))
+
+if (nrow(coefs_city) != length(age_groups)) {
+  stop("ERF coefficient table does not contain all expected age groups for Madrid.")
+}
+
+cat("=== ERF Coefficients Loaded ===\n")
+print(coefs_city[, .(city, city_code, agegroup, b1, b2, b3, b4, b5)])
+```
+
+---
+
+## 3.3 Load Daily Temperature Data
+
+```{r load-temperature}
+temp_all <- as.data.table(read_parquet(temp_path))
+
+# Minimal required columns straight from parquet
+check_required_cols(temp_all, c("URAU_CODE", "date", "ssp"), "Temperature table")
+
+# Ensure date is a proper Date and derive year/doy if missing
+if (!inherits(temp_all$date, "Date")) {
+  temp_all[, date := as.Date(date)]
+}
+if (anyNA(temp_all$date)) {
+  stop("Temperature table contains invalid or missing date values.")
+}
+if (!"year" %in% names(temp_all)) {
+  temp_all[, year := as.integer(format(date, "%Y"))]
+}
+if (!"doy" %in% names(temp_all)) {
+  temp_all[, doy := as.integer(format(date, "%j"))]
+}
+
+required_temp_cols <- c("URAU_CODE", "date", "year", "doy", "ssp")
+check_required_cols(temp_all, required_temp_cols, "Temperature table after deriving calendar fields")
+
+temp_city <- temp_all[URAU_CODE == city_code]
+
+if (nrow(temp_city) == 0L) {
+  stop("No temperature rows found for city_code=", city_code)
+}
+
+# Identify GCM columns as all non-id columns except the expected index columns
+id_cols <- c("URAU_CODE", "date", "year", "doy", "ssp")
+gcm_cols <- setdiff(names(temp_city), id_cols)
+
+if (length(gcm_cols) == 0L) {
+  stop("No GCM columns detected in the temperature table.")
+}
+
+if (is.na(demo_gcm)) {
+  demo_gcm <- gcm_cols[[1]]
+}
+
+if (!demo_gcm %in% gcm_cols) {
+  stop("Selected demo_gcm not found in projected temperature table: ", demo_gcm)
+}
+
+hist_temp <- temp_city[
+  ssp == "hist" & year >= historical_year_min & year <= historical_year_max,
+  .(date, year, doy, temp = get(demo_gcm))
+]
+proj_temp <- temp_city[
+  ssp == ssp_value & year >= projection_year_min & year <= projection_year_max,
+  .(date, year, doy, temp = get(demo_gcm))
+]
+
+if (nrow(hist_temp) == 0L) {
+  stop("No historical daily temperature data found for the selected city/model.")
+}
+if (nrow(proj_temp) == 0L) {
+  stop("No projected daily temperature data found for the selected city/model and SSP.")
+}
+if (anyNA(hist_temp$temp)) {
+  stop("Historical temperature series contains missing values for the selected model.")
+}
+if (anyNA(proj_temp$temp)) {
+  stop("Projected temperature series contains missing values for the selected model.")
+}
+
+cat("=== Temperature Data Loaded ===\n")
+cat(sprintf("  City: %s\n", city_code))
+cat(sprintf("  Selected GCM: %s\n", demo_gcm))
+cat(sprintf("  Historical rows: %s\n", format(nrow(hist_temp), big.mark = ",")))
+cat(sprintf("  Projected rows: %s\n", format(nrow(proj_temp), big.mark = ",")))
+cat(sprintf("  Historical years: %d–%d\n", min(hist_temp$year), max(hist_temp$year)))
+cat(sprintf("  Projected years: %d–%d\n", min(proj_temp$year), max(proj_temp$year)))
+```
+
+---
+
+## 3.3.5 Build Demographic Baseline Table
+
+The demographic table (`city_demography.csv`) is not stored as source data — it is derived from the `city_results.csv` baseline (population and deaths by age group for Madrid), with death rates held constant across projection years. This is appropriate for a methodological demo focused on temperature attribution.
+
+```{r build-demography}
+city_res <- fread("../data/city_results.csv")
+madrid_base <- city_res[URAU_CODE == city_code]
+madrid_base <- madrid_base[agegroup %in% age_groups]
+
+base_pop  <- setNames(madrid_base$agepop, madrid_base$agegroup)
+base_death <- setNames(madrid_base$death, madrid_base$agegroup)
+base_mx   <- base_death / base_pop
+
+all_years <- (projection_year_min - 1L):projection_year_max
+demo_city <- rbindlist(lapply(age_groups, function(ag) {
+  data.table(
+    city_code = city_code,
+    year = all_years,
+    age_group = ag,
+    population = round(base_pop[ag]),
+    mx = base_mx[ag],
+    annual_deaths = round(base_mx[ag] * base_pop[ag])
+  )
+}))
+setcolorder(demo_city, c("city_code", "year", "age_group", "population", "annual_deaths", "mx"))
+
+fwrite(demo_city, demography_path)
+
+cat("=== Demographic Baseline Built ===\n")
+cat(sprintf("  Rows: %s\n", format(nrow(demo_city), big.mark = ",")))
+cat(sprintf("  Years: %d–%d\n", min(demo_city$year), max(demo_city$year)))
+```
+
+---
+
+## 3.4 Load Demographic Baseline Inputs
+
+```{r load-demography}
+demo <- fread(demography_path)
+check_required_cols(demo, c("city_code", "year", "age_group", "population"), "Demography table")
+
+cc <- city_code
+demo_city <- demo[city_code == cc & year >= projection_year_min & year <= projection_year_max]
+
+if (nrow(demo_city) == 0L) {
+  stop("No demographic rows found for Madrid in the projection years.")
+}
+
+if (!"annual_deaths" %in% names(demo_city)) {
+  if (!"mx" %in% names(demo_city)) {
+    stop("Demography table must contain either annual_deaths or mx.")
+  }
+  demo_city[, annual_deaths := mx * population]
+}
+
+check_required_cols(demo_city, c("year", "age_group", "population", "annual_deaths"), "Demography table after derivation")
+
+demo_city <- demo_city[age_group %in% age_groups]
+demo_city <- demo_city[order(year, match(age_group, age_groups))]
+
+if (anyNA(demo_city$annual_deaths) || any(demo_city$annual_deaths < 0)) {
+  stop("Annual deaths contain missing or negative values.")
+}
+
+cat("=== Demographic Baseline Loaded ===\n")
+cat(sprintf("  Rows: %s\n", format(nrow(demo_city), big.mark = ",")))
+cat(sprintf("  Years: %d–%d\n", min(demo_city$year), max(demo_city$year)))
+print(head(demo_city, 10))
+```
+
+---
+
+# 4. Reconstruct Madrid ERFs for the Wide Age Groups
+
+The Masselot framework estimates age-group-specific cumulative temperature-mortality relationships using spline-based exposure-response functions. In this notebook, we reconstruct those wide-age-group ERFs for Madrid using the coefficient vector for each age group and a city-specific temperature basis built from the historical temperature distribution.
+
+## 4.1 Define the Temperature Basis
+
+```{r define-basis}
+varfun <- "bs"
+vardegree <- 2
+varper <- c(10, 75, 90)
+
+varknots <- quantile(hist_temp$temp, probs = varper / 100, na.rm = TRUE)
+varbound <- range(hist_temp$temp, na.rm = TRUE)
+
+argvar <- list(
+  fun = varfun,
+  degree = vardegree,
+  knots = varknots,
+  Bound = varbound
+)
+
+cat("=== Temperature Basis Parameters ===\n")
+cat(sprintf("  Bounds: [%.2f, %.2f]\n", varbound[1], varbound[2]))
+cat(sprintf("  Knots (10th, 75th, 90th pct): %s\n", paste(round(varknots, 2), collapse = ", ")))
+```
+
+---
+
+## 4.2 Derive Age-Group-Specific MMTs
+
+For each age group, we evaluate the cumulative ERF over a fine temperature grid and identify the minimum mortality temperature (MMT). Following common practice, the search is restricted to the central-to-upper part of the local temperature distribution to avoid unstable minima at the far extremes.
+
+```{r derive-mmt}
+temp_seq <- seq(varbound[1], varbound[2], by = 0.1)
+
+rr_curves <- rbindlist(lapply(seq_len(nrow(coefs_city)), function(i) {
+  ag <- coefs_city$agegroup[[i]]
+  coef_vec <- as.numeric(coefs_city[i, .(b1, b2, b3, b4, b5)])
+
+  basis_seq <- do.call(onebasis, c(list(x = temp_seq), argvar))
+  log_rr_seq <- as.numeric(basis_seq %*% coef_vec)
+
+  search_window <- temp_seq >= quantile(hist_temp$temp, 0.25, na.rm = TRUE) &
+                   temp_seq <= quantile(hist_temp$temp, 0.99, na.rm = TRUE)
+
+  mmt_value <- temp_seq[search_window][which.min(log_rr_seq[search_window])]
+
+  rr_centered <- compute_centered_rr(temp_seq, coef_vec, argvar, mmt_value)
+
+  data.table(
+    age_group = ag,
+    temp = temp_seq,
+    rr = rr_centered,
+    mmt = mmt_value
+  )
+}))
+
+mmt_by_age <- unique(rr_curves[, .(age_group, mmt)])
+
+cat("=== Derived MMT by Age Group ===\n")
+print(mmt_by_age)
+```
+
+---
+
+## 4.3 Plot the Reconstructed ERFs
+
+```{r plot-erfs}
+ggplot(rr_curves, aes(x = temp, y = rr, color = age_group)) +
+  geom_line(linewidth = 1) +
+  geom_hline(yintercept = 1, color = "grey40", linewidth = 0.5) +
+  geom_vline(data = mmt_by_age, aes(xintercept = mmt, color = age_group),
+             linetype = "dashed", alpha = 0.8, show.legend = FALSE) +
+  labs(
+    title = sprintf("Reconstructed Temperature-Mortality ERFs — %s", city),
+    subtitle = sprintf("Wide age groups | %s | GCM: %s", scenario_label, demo_gcm),
+    x = "Daily mean temperature (°C)",
+    y = "Relative risk (RR)",
+    color = "Age group"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+---
+
+# 5. Define Standard Temperature Ranges
+
+We now classify each projected daily temperature into one of four standard ranges:
+
+- **extreme cold**: below the 2.5th percentile of the historical city distribution
+- **moderate cold**: between the 2.5th percentile and the age-group-specific MMT
+- **moderate heat**: between the age-group-specific MMT and the 97.5th percentile of the historical city distribution
+- **extreme heat**: above the 97.5th percentile of the historical city distribution
+
+## 5.1 Compute Historical Reference Thresholds
+
+```{r define-thresholds}
+p025_hist <- as.numeric(quantile(hist_temp$temp, cold_extreme_percentile, na.rm = TRUE))
+p975_hist <- as.numeric(quantile(hist_temp$temp, heat_extreme_percentile, na.rm = TRUE))
+
+cat("=== Historical Thresholds for Range Classification ===\n")
+cat(sprintf("  2.5th percentile: %.2f °C\n", p025_hist))
+cat(sprintf("  97.5th percentile: %.2f °C\n", p975_hist))
+```
+
+---
+
+# 6. Compute Daily RR, AF, and AN
+
+The attributable-risk calculation is based on the standard epidemiological identity:
+
+$$
+AF = \frac{RR - 1}{RR}
+$$
+
+For each projected day and age group, we compute:
+
+1. temperature-specific RR relative to the age-group-specific MMT,
+2. the corresponding AF,
+3. the attributable number of deaths:
+
+$$
+AN_{day} = AF_{day} \times \frac{D_{year}}{N_{days,year}}
+$$
+
+where $$D_{year}$$ is the annual expected number of deaths in that age group and year.
+
+## 6.1 Expand the Daily Projection Data Across Age Groups
+
+```{r expand-projection}
+proj_temp[, date := as.Date(date)]
+proj_temp[, n_days_year := .N, by = year]
+
+proj_long <- CJ(
+  date = proj_temp$date,
+  age_group = age_groups,
+  unique = TRUE
+)
+proj_long <- merge(proj_long, proj_temp, by = "date", all.x = TRUE)
+proj_long <- merge(proj_long, mmt_by_age, by = "age_group", all.x = TRUE)
+proj_long <- merge(proj_long, demo_city[, .(year, age_group, annual_deaths)],
+                   by = c("year", "age_group"), all.x = TRUE)
+
+if (anyNA(proj_long$temp) || anyNA(proj_long$mmt) || anyNA(proj_long$annual_deaths)) {
+  stop("Projected long table contains missing temperature, MMT, or annual death values.")
+}
+
+cat("=== Expanded Projected Table ===\n")
+cat(sprintf("  Rows: %s\n", format(nrow(proj_long), big.mark = ",")))
+print(head(proj_long, 10))
+```
+
+---
+
+## 6.2 Compute Daily RR and AF
+
+```{r compute-daily-rr-af}
+coef_lookup <- coefs_city[, .(agegroup, b1, b2, b3, b4, b5)]
+setnames(coef_lookup, "agegroup", "age_group")
+proj_long <- merge(proj_long, coef_lookup, by = "age_group", all.x = TRUE)
+
+proj_long[, rr := compute_centered_rr(
+  temp = temp,
+  coef_vec = c(b1[1], b2[1], b3[1], b4[1], b5[1]),
+  argvar = argvar,
+  center_value = mmt[1]
+), by = .(age_group)]
+
+proj_long[, af_total := (rr - 1) / rr]
+proj_long[af_total < 0, af_total := 0]
+
+proj_long[, temp_range := assign_temp_range(temp, p025_hist, p975_hist, mmt)]
+
+# Attribute AF only to the daily range in which the temperature falls
+proj_long[, af_range := af_total]
+proj_long[, daily_expected_deaths := annual_deaths / n_days_year]
+proj_long[, an_day := af_range * daily_expected_deaths]
+
+cat("=== Daily RR/AF Computed ===\n")
+print(head(proj_long[, .(date, year, age_group, temp, mmt, rr, af_total, temp_range, an_day)], 12))
+```
+
+---
+
+# 7. Aggregate to Annual ANs and AFs
+
+## 7.1 Annual ANs by Age Group and Temperature Range
+
+```{r annual-ans}
+annual_ans <- proj_long[, .(
+  AN = sum(an_day, na.rm = TRUE),
+  annual_deaths = unique(annual_deaths),
+  mean_rr = mean(rr, na.rm = TRUE),
+  mean_af = mean(af_total, na.rm = TRUE)
+), by = .(year, age_group, temp_range)]
+
+annual_ans[, AF := AN / annual_deaths]
+annual_ans[, `:=`(
+  city = city,
+  city_code = city_code,
+  gcm = demo_gcm,
+  ssp = scenario_label,
+  adaptation = adaptation_level
+)]
+
+setcolorder(annual_ans, c(
+  "city", "city_code", "gcm", "ssp", "adaptation",
+  "year", "age_group", "temp_range", "annual_deaths", "AN", "AF", "mean_rr", "mean_af"
+))
+
+cat("=== Annual AN Table ===\n")
+print(head(annual_ans, 20))
+```
+
+---
+
+## 7.2 Annual Total Across Temperature Ranges
+
+```{r annual-totals}
+annual_totals <- annual_ans[, .(
+  annual_deaths = unique(annual_deaths),
+  AN_total = sum(AN),
+  AF_total = sum(AN) / unique(annual_deaths)
+), by = .(year, age_group)]
+
+cat("=== Annual Totals Across Temperature Ranges ===\n")
+print(head(annual_totals, 20))
+```
+
+---
+
+# 8. Diagnostics and Interpretation
+
+## 8.1 Annual Attributable Numbers by Temperature Range
+
+```{r plot-annual-ans-range}
+ggplot(annual_ans, aes(x = year, y = AN, color = temp_range)) +
+  geom_line(linewidth = 1) +
+  facet_wrap(~ age_group, scales = "free_y") +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = sprintf("Projected Annual Attributable Numbers — %s", city),
+    subtitle = sprintf("%s | %s | No adaptation | Wide age groups", scenario_label, demo_gcm),
+    x = "Year",
+    y = "Attributable deaths (AN)",
+    color = "Temperature range"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+---
+
+## 8.2 Annual Attributable Fraction by Temperature Range
+
+```{r plot-annual-af-range}
+ggplot(annual_ans, aes(x = year, y = AF, color = temp_range)) +
+  geom_line(linewidth = 1) +
+  facet_wrap(~ age_group, scales = "free_y") +
+  scale_y_continuous(labels = percent_format(accuracy = 0.1)) +
+  labs(
+    title = sprintf("Projected Annual Attributable Fractions — %s", city),
+    subtitle = sprintf("%s | %s | No adaptation | Wide age groups", scenario_label, demo_gcm),
+    x = "Year",
+    y = "Attributable fraction",
+    color = "Temperature range"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+---
+
+## 8.3 Age Pattern in a Selected Year
+
+```{r age-pattern-single-year}
+selected_year <- min(annual_ans$year)
+
+age_plot_dt <- annual_ans[year == selected_year]
+
+ggplot(age_plot_dt, aes(x = age_group, y = AN, fill = temp_range)) +
+  geom_col(position = "stack") +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = sprintf("Projected Attributable Numbers by Age Group — %s", selected_year),
+    subtitle = sprintf("%s | %s | %s", city, scenario_label, demo_gcm),
+    x = "Age group",
+    y = "Attributable deaths (AN)",
+    fill = "Temperature range"
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+---
+
+# 9. Export Results
+
+```{r export-results}
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+fwrite(
+  annual_ans,
+  output_file_annual
+)
+
+fwrite(
+  proj_long[, .(
+    city = city,
+    city_code = city_code,
+    gcm = demo_gcm,
+    ssp = scenario_label,
+    adaptation = adaptation_level,
+    date,
+    year,
+    doy,
+    age_group,
+    temp,
+    mmt,
+    rr,
+    af_total,
+    temp_range,
+    daily_expected_deaths,
+    an_day
+  )],
+  output_file_daily
+)
+
+cat("=== Files Written ===\n")
+cat(sprintf("  Annual AN table: %s\n", output_file_annual))
+cat(sprintf("  Daily attribution table: %s\n", output_file_daily))
+```
+
+---
+
+# 10. Notebook Summary
+
+This notebook has:
+
+1. loaded city-specific wide-age-group ERFs for Madrid,
+2. reconstructed temperature-mortality RR curves using the standard spline basis,
+3. derived age-group-specific MMTs,
+4. classified projected daily temperatures into four standard ranges,
+5. computed daily RR, AF, and attributable numbers,
+6. aggregated those results into annual ANs and AFs by age group and temperature range.
+
+## Main deliverable for the next notebook
+
+The main output is the annual AN table by:
+
+- year
+- age group
+- temperature range
+
+The next notebook in the series will take this output and **disaggregate the age-group ANs into single years of age using `pclm`**.
+
+---
+
+# Session Information
+
+```{r session-info}
+sessionInfo()
+```
