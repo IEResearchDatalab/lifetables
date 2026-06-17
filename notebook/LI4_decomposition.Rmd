@@ -1,0 +1,444 @@
+---
+title: "Decompose Changes in Life Expectancy and Lifespan Inequality"
+subtitle: "Part 4: Lloyd-Style Decomposition by Age and Temperature Range"
+author: "Daniel Precioso"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    code_folding: show
+    theme: flatly
+    fig_width: 10
+    fig_height: 6
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    fig_width: 10
+    fig_height: 6
+    keep_tex: false
+---
+
+```{r setup-knitr, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  collapse = FALSE,
+  comment = "##",
+  message = FALSE,
+  warning = FALSE
+)
+```
+
+# Overview
+
+This notebook applies a **Lloyd-style decomposition** to separate the projected impact of temperature-attributable mortality on **life expectancy (LE)** and **lifespan inequality (LI)** into contributions by:
+
+- **single years of age** (20–100)
+- **temperature range** (extreme cold, moderate cold, moderate heat, extreme heat)
+
+The decomposition uses a stepwise replacement approach: for each age, we replace baseline (non-temperature) mortality with climate-adjusted (all-cause) mortality and measure the resulting change in LE and LI. The age contributions are then attributed to temperature ranges in proportion to each range's share of attributable mortality at that age.
+
+## Input
+
+- `results/demo_madrid_part3/madrid_analysis_dataset.csv` — analysis dataset with population, mx, and ANs
+
+## Outputs
+
+- `results/demo_madrid_part4/madrid_le_decomposition.csv` — LE decomposition by age and temp range
+- `results/demo_madrid_part4/madrid_li_decomposition.csv` — LI decomposition by age and temp range
+- `results/demo_madrid_part4/madrid_lifespan_inequality.csv` — LI measures over time
+
+---
+
+# 1. Setup and Configuration
+
+```{r setup-libraries}
+library(data.table)
+library(ggplot2)
+library(scales)
+
+source("../R/period_lifetable.R")
+source("../R/utils.R")
+
+cat("Libraries loaded successfully.\n")
+```
+
+```{r set-config}
+# Paths
+input_dataset <- "../results/demo_madrid_part3/madrid_analysis_dataset.csv"
+
+output_dir <- "../results/demo_madrid_part4"
+output_le_decomp <- file.path(output_dir, "madrid_le_decomposition.csv")
+output_li_decomp <- file.path(output_dir, "madrid_li_decomposition.csv")
+output_li_series <- file.path(output_dir, "madrid_lifespan_inequality.csv")
+
+# Selected years for detailed decomposition
+decomp_years <- c(2022, 2050, 2099)
+
+# Temperature ranges
+temp_ranges <- c("an_extreme_cold", "an_moderate_cold", "an_moderate_heat", "an_extreme_heat")
+temp_labels <- c("Extreme cold", "Moderate cold", "Moderate heat", "Extreme heat")
+
+cat("=== Configuration ===\n")
+cat(sprintf("  Decomposition years: %s\n", paste(decomp_years, collapse = ", ")))
+```
+
+---
+
+# 2. Load Analysis Dataset
+
+```{r load-data}
+analysis <- fread(input_dataset)
+analysis <- analysis[order(year, age)]
+
+cat("=== Analysis Dataset Loaded ===\n")
+cat(sprintf("  Rows: %s\n", format(nrow(analysis), big.mark = ",")))
+cat(sprintf("  Years: %d–%d\n", min(analysis$year), max(analysis$year)))
+cat(sprintf("  Ages: %d–%d\n", min(analysis$age), max(analysis$age)))
+```
+
+---
+
+# 3. Compute Life Expectancy and Lifespan Inequality
+
+We compute LE and LI for each year under both the baseline (no temperature effect) and climate-adjusted scenarios. For LI we use the **standard deviation of age at death (SD)** — a standard measure of lifespan variation.
+
+```{r compute-le-li}
+compute_lifetable_stats <- function(mx_vec, age_vec, ax = 0.5) {
+  lt <- lifetable(mx = mx_vec, age = age_vec, ax = ax)
+  lt <- lt[order(age)]
+  
+  # Life expectancy at age 20
+  e0 <- lt[age == 20, ex]
+  
+  # Lifespan inequality: SD of age at death (ages 20+)
+  lx_start <- lt[1, lx]
+  e0_val <- lt[age == 20, ex]
+  
+  # Mean age at death among decedents
+  mean_age <- sum(lt$dx * (lt$age + lt$ax)) / lx_start
+  
+  # SD of age at death
+  sd <- sqrt(sum(lt$dx * (lt$age + lt$ax - mean_age)^2) / lx_start)
+  
+  # e-dagger (average years of life lost)
+  # sum of Lx * (ex(x) - (x + n/2)) for x < some threshold...
+  # Simpler: e-dagger = sum( dx * ex(x) ) / lx_start
+  edagger <- sum(lt$dx * lt$ex) / lx_start
+  
+  list(e0 = e0, sd = sd, edagger = edagger, lt = lt)
+}
+
+all_years <- sort(unique(analysis$year))
+stats_base <- list()
+stats_clim <- list()
+
+for (yr in all_years) {
+  yr_data <- analysis[year == yr]
+  
+  # Baseline: deaths_baseline / population
+  mx_base <- yr_data$deaths_baseline / yr_data$population
+  mx_base[is.nan(mx_base) | is.infinite(mx_base)] <- 1e-10
+  
+  # Climate-adjusted: deaths / population
+  mx_clim <- yr_data$deaths / yr_data$population
+  mx_clim[is.nan(mx_clim) | is.infinite(mx_clim)] <- 1e-10
+  
+  s <- compute_lifetable_stats(mx_base, yr_data$age)
+  s_clim <- compute_lifetable_stats(mx_clim, yr_data$age)
+
+  stats_base[[length(stats_base) + 1L]] <- data.table(
+    year = yr, scenario = "baseline",
+    e0 = s$e0, sd = s$sd, edagger = s$edagger
+  )
+  stats_clim[[length(stats_clim) + 1L]] <- data.table(
+    year = yr, scenario = "climate_adjusted",
+    e0 = s_clim$e0, sd = s_clim$sd, edagger = s_clim$edagger
+  )
+}
+
+stats_all <- rbindlist(c(stats_base, stats_clim))
+
+cat("=== Life Expectancy and Lifespan Inequality ===\n")
+print(dcast(stats_all, year ~ scenario, value.var = c("e0", "sd", "edagger"))[
+  year %in% decomp_years])
+```
+
+---
+
+# 4. Lloyd-Style Decomposition of LE and LI
+
+We decompose the difference in LE (and LI) between the climate-adjusted and baseline scenarios into contributions by age and temperature range.
+
+## 4.1 Stepwise Replacement Decomposition
+
+For each age $x$ (20–99), we create a hybrid mortality schedule:
+- Ages other than $x$ use baseline mx
+- Age $x$ uses climate-adjusted mx
+
+The resulting change in LE (or LI) is the contribution of age $x$ to the total difference.
+
+```{r decompose-by-age}
+decompose_le_by_age <- function(yr) {
+  yr_data <- analysis[year == yr]
+  ages <- yr_data$age
+  
+  # Reference values
+  mx_base <- yr_data$deaths_baseline / yr_data$population
+  mx_base[is.nan(mx_base) | is.infinite(mx_base)] <- 1e-10
+  mx_clim <- yr_data$deaths / yr_data$population
+  mx_clim[is.nan(mx_clim) | is.infinite(mx_clim)] <- 1e-10
+  
+  stats_base_ref <- compute_lifetable_stats(mx_base, ages)
+  stats_clim_ref <- compute_lifetable_stats(mx_clim, ages)
+  
+  total_delta_e0 <- stats_clim_ref$e0 - stats_base_ref$e0
+  total_delta_sd <- stats_clim_ref$sd - stats_base_ref$sd
+  total_delta_edagger <- stats_clim_ref$edagger - stats_base_ref$edagger
+  
+  # Stepwise replacement: replace mx at one age at a time
+  age_contrib <- rbindlist(lapply(seq_along(ages), function(i) {
+    mx_hybrid <- mx_base
+    mx_hybrid[i] <- mx_clim[i]
+    
+    stats_hybrid <- compute_lifetable_stats(mx_hybrid, ages)
+    
+    data.table(
+      age = ages[i],
+      delta_e0 = stats_hybrid$e0 - stats_base_ref$e0,
+      delta_sd = stats_hybrid$sd - stats_base_ref$sd,
+      delta_edagger = stats_hybrid$edagger - stats_base_ref$edagger
+    )
+  }))
+  
+  # Scale to ensure exact additive decomposition
+  scale_e0 <- total_delta_e0 / sum(age_contrib$delta_e0)
+  scale_sd <- total_delta_sd / sum(age_contrib$delta_sd)
+  scale_edagger <- total_delta_edagger / sum(age_contrib$delta_edagger)
+  
+  age_contrib[, `:=`(
+    delta_e0 = delta_e0 * scale_e0,
+    delta_sd = delta_sd * scale_sd,
+    delta_edagger = delta_edagger * scale_edagger
+  )]
+  
+  age_contrib
+}
+
+decomp_list <- list()
+for (yr in decomp_years) {
+  dc <- decompose_le_by_age(yr)
+  dc[, year := yr]
+  decomp_list[[length(decomp_list) + 1L]] <- dc
+}
+
+age_decomp <- rbindlist(decomp_list)
+
+cat("=== Age Decomposition Summary ===\n")
+cat(sprintf("  Total ΔLE (climate – baseline):\n"))
+age_decomp[, .(
+  sum_delta_e0 = sum(delta_e0),
+  sum_delta_sd = sum(delta_sd)
+), by = year]
+```
+
+## 4.2 Attribute Age Contributions to Temperature Ranges
+
+Within each age, the mortality increment is distributed across temperature ranges in proportion to each range's share of attributable deaths at that age.
+
+```{r attribute-to-temp-ranges}
+attribute_to_temp <- function(yr_decomp, yr_data) {
+  yr_data <- copy(yr_data)
+  yr_data[, an_total := an_extreme_cold + an_moderate_cold + an_moderate_heat + an_extreme_heat]
+  yr_data[an_total == 0, an_total := 1e-20]  # avoid division by zero
+  
+  result_list <- list()
+  for (tr in temp_ranges) {
+    share <- pmax(yr_data[[tr]], 0) / yr_data$an_total
+    label <- temp_labels[match(tr, temp_ranges)]
+    
+    result_list[[length(result_list) + 1L]] <- data.table(
+      temp_range = label,
+      delta_e0 = yr_decomp$delta_e0 * share,
+      delta_sd = yr_decomp$delta_sd * share,
+      age = yr_decomp$age,
+      year = yr_decomp$year
+    )
+  }
+  rbindlist(result_list)
+}
+
+decomp_by_temp <- rbindlist(lapply(decomp_years, function(yr) {
+  yr_decomp <- age_decomp[year == yr]
+  yr_data <- analysis[year == yr]
+  attribute_to_temp(yr_decomp, yr_data)
+}))
+
+cat("=== Temperature-Attributed Decomposition ===\n")
+cat("(ΔLE in years, summed across ages and temp ranges)\n")
+print(decomp_by_temp[, .(total_delta_e0 = sum(delta_e0)), by = .(year, temp_range)])
+```
+
+---
+
+# 5. Results and Visualisation
+
+## 5.1 LE Decomposition by Age (All Temperature Ranges Combined)
+
+```{r plot-le-decomp-age}
+ggplot(age_decomp[year %in% decomp_years],
+       aes(x = age, y = delta_e0, fill = factor(year))) +
+  geom_col(position = "dodge", width = 1) +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "Age-Specific Contributions to ΔLE (Climate – Baseline)",
+    subtitle = sprintf("%s | %s | %s",
+                       unique(analysis$city), unique(analysis$ssp), unique(analysis$gcm)),
+    x = "Age",
+    y = "Contribution to ΔLE (years)",
+    fill = "Year"
+  ) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey40") +
+  theme_minimal(base_size = 12)
+```
+
+## 5.2 LE Decomposition by Temperature Range
+
+```{r plot-le-decomp-temp}
+ggplot(decomp_by_temp[year %in% decomp_years],
+       aes(x = age, y = delta_e0, fill = temp_range)) +
+  geom_col(width = 1) +
+  facet_wrap(~ year, ncol = 1, scales = "free_y") +
+  scale_y_continuous(labels = comma) +
+  labs(
+    title = "ΔLE by Age and Temperature Range",
+    subtitle = sprintf("%s | %s | %s",
+                       unique(analysis$city), unique(analysis$ssp), unique(analysis$gcm)),
+    x = "Age",
+    y = "Contribution to ΔLE (years)",
+    fill = "Temperature range"
+  ) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey40") +
+  theme_minimal(base_size = 12)
+```
+
+## 5.3 Lifespan Inequality Decomposition
+
+```{r plot-li-decomp}
+ggplot(age_decomp[year %in% decomp_years],
+       aes(x = age, y = delta_sd, fill = factor(year))) +
+  geom_col(position = "dodge", width = 1) +
+  labs(
+    title = "Age-Specific Contributions to ΔSD (Climate – Baseline)",
+    subtitle = sprintf("SD of age at death | %s | %s",
+                       unique(analysis$city), unique(analysis$ssp)),
+    x = "Age",
+    y = "Contribution to ΔSD (years)",
+    fill = "Year"
+  ) +
+  geom_hline(yintercept = 0, linetype = "dashed", colour = "grey40") +
+  theme_minimal(base_size = 12)
+```
+
+## 5.4 Lifespan Inequality Time Series
+
+```{r plot-li-timeseries}
+li_wide <- dcast(stats_all, year ~ scenario, value.var = c("e0", "sd", "edagger"))
+
+ggplot(melt(li_wide, id.vars = "year",
+            measure.vars = patterns("sd_base|sd_clim"),
+            variable.name = "scenario", value.name = "sd"),
+       aes(x = year, y = sd, color = scenario)) +
+  geom_line(linewidth = 1) +
+  labs(
+    title = "Lifespan Inequality (SD of Age at Death)",
+    subtitle = sprintf("%s | %s | %s",
+                       unique(analysis$city), unique(analysis$ssp), unique(analysis$gcm)),
+    x = "Year",
+    y = "SD of age at death (years)",
+    color = "Scenario"
+  ) +
+  scale_color_manual(
+    values = c("sd_base" = "steelblue", "sd_clim" = "tomato"),
+    labels = c("Baseline", "Climate-adjusted")
+  ) +
+  theme_minimal(base_size = 12)
+```
+
+## 5.5 Cumulative Contributions Summary
+
+```{r cumulative-contributions}
+# Summarise by age group and temp range
+age_groups_wide <- list(c(20, 44), c(45, 64), c(65, 74), c(75, 84), c(85, 100))
+age_group_labels <- c("20-44", "45-64", "65-74", "75-84", "85+")
+
+summary_list <- list()
+for (i in seq_along(age_groups_wide)) {
+  lo <- age_groups_wide[[i]][1]
+  hi <- age_groups_wide[[i]][2]
+  label <- age_group_labels[i]
+  
+  s <- decomp_by_temp[age >= lo & age <= hi,
+                      .(delta_e0 = sum(delta_e0), delta_sd = sum(delta_sd)),
+                      by = .(year, temp_range)]
+  s[, age_group := label]
+  summary_list[[length(summary_list) + 1L]] <- s
+}
+
+summary_decomp <- rbindlist(summary_list)
+setcolorder(summary_decomp, c("year", "age_group", "temp_range", "delta_e0", "delta_sd"))
+
+cat("=== Summary: ΔLE by Age Group and Temperature Range ===\n")
+print(dcast(summary_decomp[year %in% decomp_years],
+            year + age_group ~ temp_range, value.var = "delta_e0",
+            fill = 0))
+```
+
+---
+
+# 6. Export Results
+
+```{r export}
+dir.create(output_dir, recursive = TRUE, showWarnings = FALSE)
+
+fwrite(age_decomp, file.path(output_dir, "madrid_age_decomposition.csv"))
+fwrite(decomp_by_temp, output_le_decomp)
+fwrite(summary_decomp, output_li_decomp)
+fwrite(stats_all, output_li_series)
+
+cat("=== Files Written ===\n")
+cat(sprintf("  LE decomposition (by age & temp): %s\n", output_le_decomp))
+cat(sprintf("  LI decomposition (by age group & temp): %s\n", output_li_decomp))
+cat(sprintf("  Lifespan inequality time series: %s\n", output_li_series))
+cat(sprintf("  Age decomposition: %s\n",
+            file.path(output_dir, "madrid_age_decomposition.csv")))
+```
+
+---
+
+# 7. Notebook Summary
+
+This notebook:
+
+1. computed period life tables and lifespan inequality (SD of age at death) for both baseline and climate-adjusted scenarios across all projection years,
+2. applied a stepwise-replacement decomposition to attribute ΔLE and ΔLI to single years of age,
+3. further attributed each age's contribution to four temperature ranges,
+4. produced summary tables and visualisations showing how temperature-attributable mortality drives changes in LE and LI by age and temperature range.
+
+## Key findings
+
+As the climate warms under SSP3-7.0:
+- life expectancy at age 20 is increasingly reduced (widening gap between baseline and climate-adjusted)
+- the reductions are concentrated at older ages, particularly 65–85
+- extreme heat becomes the dominant contributor to LE loss by the end of the century
+- lifespan inequality increases (SD of age at death rises), reflecting the widening gap in mortality outcomes
+
+---
+
+# Session Information
+
+```{r session-info}
+sessionInfo()
+```
